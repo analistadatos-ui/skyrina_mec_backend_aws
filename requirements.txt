@@ -1,7 +1,10 @@
 fastapi
-uvicorn
-sqlalchemy
-psycopg2-binary
-python-dotenv
-passlib==1.7.4
-bcrypt==4.0.1
+   mangum
+   sqlalchemy
+   psycopg2-binary
+   passlib[bcrypt]
+   bcrypt
+   pydantic
+   python-dotenv
+   boto3
+   python-multipart
