@@ -697,3 +697,482 @@ def close_ticket(
             status_code=500,
             detail=f"Error closing ticket: {str(e)}"
         )
+
+# ==========================================
+# MACHINE MANAGEMENT ROUTES
+# ==========================================
+
+from app.models.machine_model import Machine
+
+@router.get("/maquinas")
+def get_machines(
+    db: Session = Depends(get_db),
+):
+    """
+    Get all machines
+    """
+    try:
+        machines = db.query(Machine).order_by(Machine.nombre).all()
+        
+        response = []
+        for machine in machines:
+            response.append({
+                "id": str(machine.id),
+                "nombre": machine.nombre,
+                "activo": machine.activo,
+            })
+        
+        return {
+            "success": True,
+            "machines": response,
+        }
+        
+    except Exception as e:
+        print(f"Error in get_machines: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching machines: {str(e)}"
+        )
+
+
+@router.post("/maquinas")
+def create_machine(
+    nombre: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Create a new machine
+    """
+    try:
+        # Check if machine already exists (case insensitive)
+        existing = db.query(Machine).filter(
+            func.lower(Machine.nombre) == nombre.lower()
+        ).first()
+        
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="Ya existe una máquina con ese nombre"
+            )
+        
+        new_machine = Machine(
+            nombre=nombre.strip(),
+            activo=True,
+        )
+        
+        db.add(new_machine)
+        db.commit()
+        db.refresh(new_machine)
+        
+        return {
+            "success": True,
+            "machine": {
+                "id": str(new_machine.id),
+                "nombre": new_machine.nombre,
+                "activo": new_machine.activo,
+            },
+            "message": "Máquina creada exitosamente"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in create_machine: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating machine: {str(e)}"
+        )
+
+
+@router.put("/maquinas/{machine_id}/toggle")
+def toggle_machine_status(
+    machine_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Toggle machine active/inactive status
+    """
+    try:
+        machine = db.query(Machine).filter(Machine.id == machine_id).first()
+        
+        if not machine:
+            raise HTTPException(
+                status_code=404,
+                detail="Máquina no encontrada"
+            )
+        
+        machine.activo = not machine.activo
+        db.commit()
+        
+        return {
+            "success": True,
+            "machine": {
+                "id": str(machine.id),
+                "nombre": machine.nombre,
+                "activo": machine.activo,
+            },
+            "message": f"Máquina {'activada' if machine.activo else 'desactivada'} exitosamente"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in toggle_machine_status: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error toggling machine status: {str(e)}"
+        )
+
+
+@router.delete("/maquinas/{machine_id}")
+def delete_machine(
+    machine_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Delete a machine
+    """
+    try:
+        machine = db.query(Machine).filter(Machine.id == machine_id).first()
+        
+        if not machine:
+            raise HTTPException(
+                status_code=404,
+                detail="Máquina no encontrada"
+            )
+        
+        db.delete(machine)
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Máquina eliminada exitosamente"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in delete_machine: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting machine: {str(e)}"
+        )
+
+
+@router.put("/maquinas/{machine_id}")
+def update_machine(
+    machine_id: str,
+    nombre: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Update machine name
+    """
+    try:
+        machine = db.query(Machine).filter(Machine.id == machine_id).first()
+        
+        if not machine:
+            raise HTTPException(
+                status_code=404,
+                detail="Máquina no encontrada"
+            )
+        
+        # Check if another machine has this name
+        existing = db.query(Machine).filter(
+            func.lower(Machine.nombre) == nombre.lower(),
+            Machine.id != machine_id
+        ).first()
+        
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="Ya existe otra máquina con ese nombre"
+            )
+        
+        machine.nombre = nombre.strip()
+        db.commit()
+        
+        return {
+            "success": True,
+            "machine": {
+                "id": str(machine.id),
+                "nombre": machine.nombre,
+                "activo": machine.activo,
+            },
+            "message": "Máquina actualizada exitosamente"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in update_machine: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating machine: {str(e)}"
+        )
+    
+# ==========================================
+# PROTOCOL MANAGEMENT ROUTES
+# ==========================================
+
+from app.models.protocol_model import Protocol
+from pydantic import BaseModel
+from typing import List, Optional
+
+# Create Pydantic models for request/response
+class ProtocolCreate(BaseModel):
+    nombre: str
+    pasos: List[str]
+
+class ProtocolUpdate(BaseModel):
+    nombre: Optional[str] = None
+    pasos: Optional[List[str]] = None
+
+@router.get("/protocolos")
+def get_protocols(
+    db: Session = Depends(get_db),
+):
+    """
+    Get all protocols
+    """
+    try:
+        protocols = db.query(Protocol).filter(
+            Protocol.activo == True
+        ).order_by(Protocol.created_at.desc()).all()
+        
+        response = []
+        for protocol in protocols:
+            response.append({
+                "id": str(protocol.id),
+                "nombre": protocol.nombre,
+                "pasos": protocol.pasos,
+                "created_at": protocol.created_at,
+            })
+        
+        return {
+            "success": True,
+            "protocols": response,
+        }
+        
+    except Exception as e:
+        print(f"Error in get_protocols: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching protocols: {str(e)}"
+        )
+
+
+@router.post("/protocolos")
+def create_protocol(
+    protocol: ProtocolCreate,  # Changed to accept JSON body
+    db: Session = Depends(get_db),
+):
+    """
+    Create a new protocol
+    """
+    try:
+        # Validate input
+        if not protocol.nombre or not protocol.nombre.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="El nombre del protocolo es requerido"
+            )
+        
+        if not protocol.pasos or len(protocol.pasos) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="El protocolo debe tener al menos un paso"
+            )
+        
+        # Filter out empty steps
+        pasos_filtrados = [p.strip() for p in protocol.pasos if p and p.strip()]
+        
+        if len(pasos_filtrados) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="El protocolo debe tener al menos un paso válido"
+            )
+        
+        # Check if protocol already exists (case insensitive)
+        existing = db.query(Protocol).filter(
+            func.lower(Protocol.nombre) == protocol.nombre.lower()
+        ).first()
+        
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="Ya existe un protocolo con ese nombre"
+            )
+        
+        new_protocol = Protocol(
+            nombre=protocol.nombre.strip(),
+            pasos=pasos_filtrados,
+            activo=True,
+        )
+        
+        db.add(new_protocol)
+        db.commit()
+        db.refresh(new_protocol)
+        
+        return {
+            "success": True,
+            "protocol": {
+                "id": str(new_protocol.id),
+                "nombre": new_protocol.nombre,
+                "pasos": new_protocol.pasos,
+                "created_at": new_protocol.created_at,
+            },
+            "message": "Protocolo creado exitosamente"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in create_protocol: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating protocol: {str(e)}"
+        )
+
+
+@router.put("/protocolos/{protocol_id}")
+def update_protocol(
+    protocol_id: str,
+    protocol: ProtocolUpdate,  # Changed to accept JSON body
+    db: Session = Depends(get_db),
+):
+    """
+    Update an existing protocol
+    """
+    try:
+        db_protocol = db.query(Protocol).filter(Protocol.id == protocol_id).first()
+        
+        if not db_protocol:
+            raise HTTPException(
+                status_code=404,
+                detail="Protocolo no encontrado"
+            )
+        
+        if protocol.nombre is not None and protocol.nombre.strip():
+            # Check if another protocol has this name
+            existing = db.query(Protocol).filter(
+                func.lower(Protocol.nombre) == protocol.nombre.lower(),
+                Protocol.id != protocol_id
+            ).first()
+            
+            if existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Ya existe otro protocolo con ese nombre"
+                )
+            
+            db_protocol.nombre = protocol.nombre.strip()
+        
+        if protocol.pasos is not None:
+            pasos_filtrados = [p.strip() for p in protocol.pasos if p and p.strip()]
+            if len(pasos_filtrados) > 0:
+                db_protocol.pasos = pasos_filtrados
+        
+        db.commit()
+        db.refresh(db_protocol)
+        
+        return {
+            "success": True,
+            "protocol": {
+                "id": str(db_protocol.id),
+                "nombre": db_protocol.nombre,
+                "pasos": db_protocol.pasos,
+            },
+            "message": "Protocolo actualizado exitosamente"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in update_protocol: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating protocol: {str(e)}"
+        )
+
+
+@router.delete("/protocolos/{protocol_id}")
+def delete_protocol(
+    protocol_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Soft delete a protocol (set active=False)
+    """
+    try:
+        protocol = db.query(Protocol).filter(Protocol.id == protocol_id).first()
+        
+        if not protocol:
+            raise HTTPException(
+                status_code=404,
+                detail="Protocolo no encontrado"
+            )
+        
+        protocol.activo = False
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Protocolo eliminado exitosamente"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in delete_protocol: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting protocol: {str(e)}"
+        )
+
+
+@router.get("/protocolos/{protocol_id}")
+def get_protocol(
+    protocol_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Get a single protocol by ID
+    """
+    try:
+        protocol = db.query(Protocol).filter(
+            Protocol.id == protocol_id,
+            Protocol.activo == True
+        ).first()
+        
+        if not protocol:
+            raise HTTPException(
+                status_code=404,
+                detail="Protocolo no encontrado"
+            )
+        
+        return {
+            "success": True,
+            "protocol": {
+                "id": str(protocol.id),
+                "nombre": protocol.nombre,
+                "pasos": protocol.pasos,
+                "created_at": protocol.created_at,
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_protocol: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching protocol: {str(e)}"
+        )

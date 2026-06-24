@@ -8,15 +8,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import SessionLocal
 from app.models.user_model import User
+from app.models.linea_model import Linea
 from app.core.security import hash_password
 
+
+def create_lineas(db):
+    """Create 20 lineas if they don't exist. Returns list of Linea rows."""
+    existing = db.query(Linea).count()
+    if existing == 0:
+        for i in range(1, 21):
+            db.add(Linea(id=uuid.uuid4(), numero=i, nombre=f"Linea {i}", activa=True))
+        db.commit()
+        print("Created 20 lineas")
+    else:
+        print(f"{existing} lineas already exist, skipping creation")
+    return db.query(Linea).order_by(Linea.numero.asc()).all()
+
+
 def create_users_directly():
-    """Create users directly without importing seed_users."""
+    """Create users, linking each jefe_linea to its matching linea."""
     db = SessionLocal()
     try:
+        # 1) Ensure lineas exist FIRST, so we can link users to them
+        lineas = create_lineas(db)
+        # map numero -> linea.id for quick lookup
+        linea_by_numero = {l.numero: l.id for l in lineas}
+
         users = []
-        
-        # Create 20 jefes de linea
+
+        # 20 jefes de linea, each linked to the matching linea
         for i in range(1, 21):
             users.append(
                 User(
@@ -25,12 +45,12 @@ def create_users_directly():
                     nombre=f"Jefe Linea {i}",
                     hashed_password=hash_password(f"jefe_l{i}"),
                     role="jefe_linea",
-                    linea_id=None,
+                    linea_id=linea_by_numero.get(i),  # <-- LINKED now
                     status=True,
                 )
             )
-        
-        # Create jefe mecanicos
+
+        # jefe mecanicos
         users.append(
             User(
                 id=uuid.uuid4(),
@@ -41,8 +61,8 @@ def create_users_directly():
                 status=True,
             )
         )
-        
-        # Create mechanics
+
+        # mechanics
         mechanics = [
             ("fernando_reyes", "Fernando Reyes", "123456"),
             ("gregoro_cuevas", "Gregoro Cuevas", "123456"),
@@ -52,7 +72,6 @@ def create_users_directly():
             ("juan_carlos_vega", "Juan Carlos Vega", "123456"),
             ("ivan_becerra", "Ivan Becerra", "123456"),
         ]
-        
         for username, nombre, password in mechanics:
             users.append(
                 User(
@@ -64,8 +83,8 @@ def create_users_directly():
                     status=True,
                 )
             )
-        
-        # Create supervisor
+
+        # supervisor
         users.append(
             User(
                 id=uuid.uuid4(),
@@ -76,8 +95,8 @@ def create_users_directly():
                 status=True,
             )
         )
-        
-        # Create RH
+
+        # RH
         users.append(
             User(
                 id=uuid.uuid4(),
@@ -88,46 +107,48 @@ def create_users_directly():
                 status=True,
             )
         )
-        
+
         db.add_all(users)
         db.commit()
-        print(f"✅ Created {len(users)} users with proper hashing")
+        print(f"Created {len(users)} users (jefe_linea users linked to lineas)")
         return True
-        
+
     except Exception as e:
         db.rollback()
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
     finally:
         db.close()
 
+
 def clean_and_seed():
     db = SessionLocal()
     try:
-        # Delete all users
         count = db.query(User).count()
         db.query(User).delete()
         db.commit()
-        print(f"✅ Deleted {count} existing users")
+        print(f"Deleted {count} existing users")
     except Exception as e:
         db.rollback()
-        print(f"❌ Error deleting users: {e}")
+        print(f"Error deleting users: {e}")
         return
     finally:
         db.close()
-    
-    # Create new users
+
     create_users_directly()
+
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("CLEAN AND SEED USERS")
+    print("CLEAN AND SEED USERS + LINEAS")
     print("=" * 50)
-    
-    response = input("⚠️  This will delete ALL users. Continue? (y/n): ")
+
+    response = input("This will delete ALL users and re-seed. Continue? (y/n): ")
     if response.lower() != 'y':
-        print("❌ Cancelled.")
+        print("Cancelled.")
         sys.exit(0)
-    
+
     clean_and_seed()
-    print("\n✅ Done! Users recreated with new password hashing.")
+    print("\nDone! Users recreated and linked to lineas.")
