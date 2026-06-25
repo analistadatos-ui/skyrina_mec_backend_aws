@@ -46,10 +46,10 @@ def get_bono_max(db: Session) -> int:
 
 
 def get_tiempo_thresholds(db: Session) -> tuple[float, float]:
-    """Return (meta_tiempo_100, meta_tiempo_50) from DB config."""
+    """Return (meta_tiempo_100, meta_tiempo_0) from DB config."""
     cfg = _get_config(db)
     t100 = float(cfg.get("meta_tiempo_100", DEFAULTS["meta_tiempo_100"]))
-    t0   = float(cfg.get("meta_tiempo_50",  DEFAULTS["meta_tiempo_50"]))
+    t0   = float(cfg.get("meta_tiempo_0",   DEFAULTS["meta_tiempo_0"]))
     return t100, t0
 
 
