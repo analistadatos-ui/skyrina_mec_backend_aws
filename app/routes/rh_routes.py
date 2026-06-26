@@ -462,3 +462,81 @@ def cerrar_bono(payload: CerrarBonoRequest, db: Session = Depends(get_db)):
         "bono_pct":   row.bono_pct,
         "cerrado_at": row.cerrado_at.isoformat(),
     }
+
+# ==========================================
+# HISTORIAL — yearly bonus history
+# GET /rh/bonos/historial/{anio}
+# ==========================================
+# Returns, for the given year, the total paid and a per-month breakdown,
+# aggregated from CLOSED bono weeks (BonoCierre.status == "cerrado").
+# Shape matches HistorialPage.jsx:
+#   { success, anio, total_pagado, meses: [ { mes, total_pagado, promedio_bono_pct } ] }
+# ==========================================
+
+_MESES_ES = [
+    "Ene", "Feb", "Mar", "Abr", "May", "Jun",
+    "Jul", "Ago", "Sep", "Oct", "Nov", "Dic",
+]
+
+
+@router.get("/bonos/historial/{anio}")
+def get_historial(anio: int, db: Session = Depends(get_db)):
+    """
+    Yearly bonus history. Aggregates CLOSED bono weeks by month for the
+    requested year. The 'semana' field is the Monday date (YYYY-MM-DD),
+    which we use to bucket each closed week into its month.
+    """
+    # Pull all closed weeks; filter to the requested year by the 'semana' date.
+    closed_rows = (
+        db.query(BonoCierre)
+        .filter(BonoCierre.status == "cerrado")
+        .all()
+    )
+
+    # Bucket by month number for the requested year
+    # month_num -> { "montos": [...], "pcts": [...] }
+    buckets: dict[int, dict] = {}
+    total_pagado = 0
+
+    for row in closed_rows:
+        try:
+            week_date = date.fromisoformat(row.semana)
+        except (ValueError, TypeError):
+            continue
+
+        if week_date.year != anio:
+            continue
+
+        monto = row.monto_bono_mxn or 0
+        pct = row.bono_pct if row.bono_pct is not None else 0
+
+        total_pagado += monto
+
+        m = week_date.month
+        if m not in buckets:
+            buckets[m] = {"montos": [], "pcts": []}
+        buckets[m]["montos"].append(monto)
+        buckets[m]["pcts"].append(pct)
+
+    # Build the months array, ordered by calendar month, only months that have data
+    meses = []
+    for month_num in sorted(buckets.keys()):
+        data = buckets[month_num]
+        mes_total = sum(data["montos"])
+        promedio = (
+            round(sum(data["pcts"]) / len(data["pcts"]), 1)
+            if data["pcts"]
+            else 0.0
+        )
+        meses.append({
+            "mes": _MESES_ES[month_num - 1],
+            "total_pagado": mes_total,
+            "promedio_bono_pct": promedio,
+        })
+
+    return {
+        "success": True,
+        "anio": anio,
+        "total_pagado": total_pagado,
+        "meses": meses,
+    }
