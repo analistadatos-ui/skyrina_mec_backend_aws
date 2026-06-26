@@ -246,3 +246,86 @@ def get_users(
 
         "users": response,
     }
+
+# ==========================================
+# UPDATE USER (status, nombre, role, linea_id)
+# PATCH /auth/users/{user_id}
+# ==========================================
+from pydantic import BaseModel
+from typing import Optional
+
+
+class UserUpdateSchema(BaseModel):
+    nombre: Optional[str] = None
+    role: Optional[str] = None
+    status: Optional[bool] = None
+    linea_id: Optional[str] = None
+    password: Optional[str] = None  # optional password reset
+
+
+@router.patch("/users/{user_id}")
+def update_user(
+    user_id: str,
+    payload: UserUpdateSchema,
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Apply only the fields that were provided
+    if payload.nombre is not None:
+        user.nombre = payload.nombre
+    if payload.role is not None:
+        user.role = payload.role
+    if payload.status is not None:
+        user.status = payload.status
+    if payload.linea_id is not None:
+        user.linea_id = payload.linea_id if payload.linea_id else None
+    if payload.password:
+        user.hashed_password = hash_password(payload.password)
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "success": True,
+        "message": "User updated successfully",
+        "user": {
+            "id": str(user.id),
+            "username": user.username,
+            "nombre": user.nombre,
+            "role": (
+                user.role.value
+                if hasattr(user.role, "value")
+                else str(user.role)
+            ),
+            "status": user.status,
+            "linea_id": str(user.linea_id) if user.linea_id else None,
+        },
+    }
+
+
+# ==========================================
+# DELETE USER
+# DELETE /auth/users/{user_id}
+# ==========================================
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    db.delete(user)
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "User deleted successfully",
+        "id": user_id,
+    }
