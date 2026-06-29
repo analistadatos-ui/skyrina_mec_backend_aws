@@ -12,6 +12,8 @@ from app.database import get_db
 from app.models.ticket_model import Ticket, TicketStatus, TicketType
 from app.models.user_model import User
 from app.models.bono_model import BonoCierre
+from app.models.ticket_cambio_model import TicketCambioEstilo
+from app.models.linea_model import Linea
 from app.models.system_config_model import SystemConfig, DEFAULTS
 
 router = APIRouter(
@@ -539,4 +541,96 @@ def get_historial(anio: int, db: Session = Depends(get_db)):
         "anio": anio,
         "total_pagado": total_pagado,
         "meses": meses,
+    }
+
+# ==========================================
+# REPORTE DE CAMBIOS DE ESTILO
+# GET /rh/reportes/cambios?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
+# ==========================================
+# Returns style-change tickets in the date range, joined with their
+# cambio detail (estilo origen/destino), the line, and the mechanic.
+# Shape matches ReportesPage.jsx:
+#   { success, total_cambios, promedio_tiempo_min, cambios: [ {...} ] }
+# ==========================================
+from fastapi import Query
+
+
+@router.get("/reportes/cambios")
+def reporte_cambios(
+    desde: str = Query(..., description="Fecha inicio YYYY-MM-DD"),
+    hasta: str = Query(..., description="Fecha fin YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+):
+    # Validate dates
+    try:
+        d_start = date.fromisoformat(desde)
+        d_end = date.fromisoformat(hasta)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Formato de fecha inválido. Usa YYYY-MM-DD")
+
+    start_dt = datetime.combine(d_start, datetime.min.time()).replace(tzinfo=timezone.utc)
+    end_dt = datetime.combine(d_end, datetime.max.time()).replace(tzinfo=timezone.utc)
+
+    # All style-change tickets in range
+    tickets = (
+        db.query(Ticket)
+        .filter(
+            Ticket.tipo == TicketType.cambio_estilo,
+            Ticket.created_at >= start_dt,
+            Ticket.created_at <= end_dt,
+        )
+        .order_by(Ticket.created_at.desc())
+        .all()
+    )
+
+    # Preload lookups to avoid N+1
+    lineas = {str(l.id): l for l in db.query(Linea).all()}
+    users = {str(u.id): u for u in db.query(User).all()}
+
+    cambios = []
+    total_tiempo = 0.0
+    tiempo_count = 0
+
+    for t in tickets:
+        detail = (
+            db.query(TicketCambioEstilo)
+            .filter(TicketCambioEstilo.ticket_id == t.id)
+            .first()
+        )
+
+        linea = lineas.get(str(t.linea_id)) if t.linea_id else None
+        linea_label = (
+            getattr(linea, "nombre", None)
+            or (f"Línea {linea.numero}" if linea and getattr(linea, "numero", None) else "—")
+        )
+
+        mecanico = users.get(str(t.assigned_to)) if t.assigned_to else None
+        mecanico_nombre = mecanico.nombre if mecanico else "Sin asignar"
+
+        tiempo = t.resolution_minutes if t.resolution_minutes is not None else 0
+        if t.resolution_minutes is not None:
+            total_tiempo += t.resolution_minutes
+            tiempo_count += 1
+
+        cambios.append({
+            "fecha": t.created_at.date().isoformat() if t.created_at else None,
+            "linea": linea_label,
+            "estilo_origen": detail.estilo_actual if detail else "—",
+            "estilo_destino": detail.nuevo_estilo if detail else "—",
+            "tiempo_min": float(tiempo),
+            # NOTE: machine counts are not stored on TicketCambioEstilo.
+            # Returning 0 keeps the frontend table happy; add fields later if needed.
+            "maquinas_mantienen": 0,
+            "maquinas_agregar": 0,
+            "mecanico": mecanico_nombre,
+            "motivo": detail.motivo if detail else None,
+        })
+
+    promedio = round(total_tiempo / tiempo_count, 1) if tiempo_count else 0.0
+
+    return {
+        "success": True,
+        "total_cambios": len(cambios),
+        "promedio_tiempo_min": promedio,
+        "cambios": cambios,
     }
