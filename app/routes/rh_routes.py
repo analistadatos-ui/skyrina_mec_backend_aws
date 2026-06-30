@@ -12,7 +12,7 @@ from app.database import get_db
 from app.models.ticket_model import Ticket, TicketStatus, TicketType
 from app.models.user_model import User
 from app.models.bono_model import BonoCierre
-from app.models.ticket_cambio_model import TicketCambioEstilo
+from app.models.cambio_estilo_model import CambioEstilo
 from app.models.linea_model import Linea
 from app.models.system_config_model import SystemConfig, DEFAULTS
 
@@ -641,8 +641,8 @@ def reporte_cambios(
 
     for t in tickets:
         detail = (
-            db.query(TicketCambioEstilo)
-            .filter(TicketCambioEstilo.ticket_id == t.id)
+            db.query(CambioEstilo)
+            .filter(CambioEstilo.ticket_id == t.id)
             .first()
         )
 
@@ -666,7 +666,7 @@ def reporte_cambios(
             "estilo_origen": detail.estilo_actual if detail else "—",
             "estilo_destino": detail.nuevo_estilo if detail else "—",
             "tiempo_min": float(tiempo),
-            # NOTE: machine counts are not stored on TicketCambioEstilo.
+            # machine counts are not stored on CambioEstilo.
             # Returning 0 keeps the frontend table happy; add fields later if needed.
             "maquinas_mantienen": 0,
             "maquinas_agregar": 0,
