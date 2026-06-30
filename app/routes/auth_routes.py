@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -63,6 +65,8 @@ def register_user(
         role=payload.role,
 
         linea_id=payload.linea_id,
+
+        status=True,  # new users are active by default
     )
 
     db.add(new_user)
@@ -238,6 +242,9 @@ def get_users(
                         else "piso"
                     )
                 ),
+
+            # Frontend uses this for badge (Activo/Inactivo) and toggle
+            "status": user.status if user.status is not None else False,
         })
 
     return {
@@ -269,7 +276,12 @@ def update_user(
     payload: UserUpdateSchema,
     db: Session = Depends(get_db),
 ):
-    user = db.query(User).filter(User.id == user_id).first()
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid user ID format")
+
+    user = db.query(User).filter(User.id == uid).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -316,7 +328,12 @@ def delete_user(
     user_id: str,
     db: Session = Depends(get_db),
 ):
-    user = db.query(User).filter(User.id == user_id).first()
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid user ID format")
+
+    user = db.query(User).filter(User.id == uid).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
