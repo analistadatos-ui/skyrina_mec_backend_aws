@@ -485,19 +485,16 @@ _MESES_ES = [
 @router.get("/bonos/historial/{anio}")
 def get_historial(anio: int, db: Session = Depends(get_db)):
     """
-    Yearly bonus history. Aggregates CLOSED bono weeks by month for the
-    requested year. The 'semana' field is the Monday date (YYYY-MM-DD),
-    which we use to bucket each closed week into its month.
+    Yearly bonus history. Aggregates CLOSED bono weeks by month.
+    total_pagado uses sum of montos_individuales (actual per-mechanic
+    confirmed amounts), falling back to monto_final_mxn then monto_bono_mxn.
     """
-    # Pull all closed weeks; filter to the requested year by the 'semana' date.
     closed_rows = (
         db.query(BonoCierre)
         .filter(BonoCierre.status == "cerrado")
         .all()
     )
 
-    # Bucket by month number for the requested year
-    # month_num -> { "montos": [...], "pcts": [...] }
     buckets: dict[int, dict] = {}
     total_pagado = 0
 
@@ -510,9 +507,16 @@ def get_historial(anio: int, db: Session = Depends(get_db)):
         if week_date.year != anio:
             continue
 
-        monto = row.monto_bono_mxn or 0
-        pct = row.bono_pct if row.bono_pct is not None else 0
+        # Use actual per-mechanic confirmed payouts when available
+        montos_ind = getattr(row, "montos_individuales", None) or []
+        if montos_ind:
+            monto = sum(entry.get("monto_final_mxn", 0) for entry in montos_ind)
+        elif row.monto_final_mxn is not None:
+            monto = row.monto_final_mxn
+        else:
+            monto = row.monto_bono_mxn or 0
 
+        pct = row.bono_pct if row.bono_pct is not None else 0
         total_pagado += monto
 
         m = week_date.month
@@ -521,7 +525,6 @@ def get_historial(anio: int, db: Session = Depends(get_db)):
         buckets[m]["montos"].append(monto)
         buckets[m]["pcts"].append(pct)
 
-    # Build the months array, ordered by calendar month, only months that have data
     meses = []
     for month_num in sorted(buckets.keys()):
         data = buckets[month_num]
@@ -543,6 +546,50 @@ def get_historial(anio: int, db: Session = Depends(get_db)):
         "total_pagado": total_pagado,
         "meses": meses,
     }
+
+
+# ==========================================
+# GET SEMANAS FOR A SPECIFIC YEAR
+# GET /rh/bonos/semanas-anio/{anio}
+# Returns all BonoCierre rows for the year, newest first.
+# Used by HistorialPage weekly table.
+# ==========================================
+@router.get("/bonos/semanas-anio/{anio}")
+def get_semanas_anio(anio: int, db: Session = Depends(get_db)):
+    """Return all bono weeks for the given calendar year."""
+    rows = db.query(BonoCierre).all()
+
+    result = []
+    for row in rows:
+        try:
+            week_date = date.fromisoformat(row.semana)
+        except (ValueError, TypeError):
+            continue
+        if week_date.year != anio:
+            continue
+
+        montos_ind = getattr(row, "montos_individuales", None) or []
+        if montos_ind:
+            total_pagado_semana = sum(e.get("monto_final_mxn", 0) for e in montos_ind)
+        elif row.monto_final_mxn is not None:
+            total_pagado_semana = row.monto_final_mxn
+        else:
+            total_pagado_semana = row.monto_bono_mxn
+
+        result.append({
+            "semana":         row.semana,
+            "cerrado":        row.status == "cerrado",
+            "bono_pct":       row.bono_pct,
+            "monto_bono_mxn": row.monto_bono_mxn,
+            "total_pagado":   total_pagado_semana,
+            "afectacion_pct": row.afectacion_pct,
+            "cambios_pct":    row.cambios_pct,
+            "orden_pct":      row.orden_pct,
+            "cerrado_at":     row.cerrado_at.isoformat() if row.cerrado_at else None,
+        })
+
+    result.sort(key=lambda x: x["semana"], reverse=True)
+    return {"success": True, "semanas": result}
 
 # ==========================================
 # REPORTE DE CAMBIOS DE ESTILO
