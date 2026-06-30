@@ -238,6 +238,100 @@ async def create_cambio_estilo_ticket(
 
 
 # ==========================================
+# SHARED SERIALIZER — ticket + mechanic name + type details
+# ==========================================
+def _serialize_ticket_with_mechanic(ticket: Ticket, db: Session) -> dict:
+    data = {
+        "id": str(ticket.id),
+        "ticket_number": ticket.ticket_number,
+        "titulo": ticket.titulo,
+        "descripcion": ticket.descripcion,
+        "tipo": ticket.tipo.value if hasattr(ticket.tipo, "value") else str(ticket.tipo),
+        "status": ticket.status.value if hasattr(ticket.status, "value") else str(ticket.status),
+        "created_at": ticket.created_at,
+        "completed_at": str(ticket.completed_at) if ticket.completed_at else None,
+        "closed_at": str(getattr(ticket, "closed_at", None)) if getattr(ticket, "closed_at", None) else None,
+        "prioridad_general": ticket.prioridad_general,
+        "assigned_to": str(ticket.assigned_to) if ticket.assigned_to else None,
+        "assigned_mechanic": None,
+        "ubicacion": (
+            ticket.ubicacion.value if hasattr(ticket.ubicacion, "value")
+            else str(ticket.ubicacion) if ticket.ubicacion else None
+        ),
+        "resolution_minutes": getattr(ticket, "resolution_minutes", None),
+        "delayed": getattr(ticket, "delayed", False),
+    }
+
+    if ticket.assigned_to:
+        mechanic = db.query(User).filter(User.id == ticket.assigned_to).first()
+        if mechanic:
+            data["assigned_mechanic"] = mechanic.nombre
+
+    if ticket.tipo == TicketType.falla_equipo:
+        falla = db.query(FallaEquipo).filter(FallaEquipo.ticket_id == ticket.id).first()
+        if falla:
+            data["details"] = {
+                "maquina_nombre": falla.maquina_nombre,
+                "maquina_codigo": falla.maquina_codigo,
+                "area": falla.area,
+                "observaciones": falla.observaciones,
+            }
+    elif ticket.tipo == TicketType.cambio_estilo:
+        cambio = db.query(CambioEstilo).filter(CambioEstilo.ticket_id == ticket.id).first()
+        if cambio:
+            data["details"] = {
+                "estilo_actual": cambio.estilo_actual,
+                "nuevo_estilo": cambio.nuevo_estilo,
+                "observaciones": cambio.observaciones,
+            }
+
+    return data
+
+
+# ==========================================
+# GET ACTIVE TICKETS (with mechanic name)
+# pendiente | asignado | en_proceso
+# ==========================================
+@router.get("/activos")
+def get_active_tickets(db: Session = Depends(get_db)):
+    try:
+        tickets = (
+            db.query(Ticket)
+            .filter(Ticket.status.in_([
+                TicketStatus.pendiente,
+                TicketStatus.asignado,
+                TicketStatus.en_proceso,
+            ]))
+            .order_by(Ticket.created_at.desc())
+            .all()
+        )
+        response = [_serialize_ticket_with_mechanic(t, db) for t in tickets]
+        return {"success": True, "tickets": response}
+    except Exception as e:
+        print(f"Error getting active tickets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# GET CLOSED TICKETS (with mechanic name)
+# ==========================================
+@router.get("/cerrados")
+def get_closed_tickets(db: Session = Depends(get_db)):
+    try:
+        tickets = (
+            db.query(Ticket)
+            .filter(Ticket.status == TicketStatus.cerrado)
+            .order_by(Ticket.closed_at.desc())
+            .all()
+        )
+        response = [_serialize_ticket_with_mechanic(t, db) for t in tickets]
+        return {"success": True, "tickets": response}
+    except Exception as e:
+        print(f"Error getting closed tickets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
 # GET TICKETS BY LINEA ID
 # ==========================================
 @router.get("/linea/{linea_id}")

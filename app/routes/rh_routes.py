@@ -293,6 +293,7 @@ def get_semana_detail(semana: str, db: Session = Depends(get_db)):
             "orden_pct":         kpi["orden_pct"],
             "tickets_cerrados":  kpi["closed_count"],
             "tickets_asignados": kpi["assigned_count"],
+            "monto_bono_mxn":    kpi["monto_bono_mxn"],
             "monto_final_mxn":   stored_montos.get(str(m.id)),
         })
 
