@@ -719,6 +719,7 @@ def get_machines(
             response.append({
                 "id": str(machine.id),
                 "nombre": machine.nombre,
+                "codigo": getattr(machine, "codigo", None),
                 "activo": machine.activo,
             })
         
@@ -738,10 +739,13 @@ def get_machines(
 @router.post("/maquinas")
 def create_machine(
     nombre: str,
+    codigo: str = None,
     db: Session = Depends(get_db),
 ):
     """
-    Create a new machine
+    Create a new machine. `codigo` is the value read from the machine's QR
+    code (optional, but recommended so the machine can be identified later
+    by scanning again).
     """
     try:
         # Check if machine already exists (case insensitive)
@@ -754,9 +758,26 @@ def create_machine(
                 status_code=400,
                 detail="Ya existe una máquina con ese nombre"
             )
-        
+
+        codigo_limpio = codigo.strip() if codigo else None
+
+        # =====================================
+        # CHECK IF QR CODE IS ALREADY REGISTERED
+        # =====================================
+        if codigo_limpio:
+            existing_codigo = db.query(Machine).filter(
+                Machine.codigo == codigo_limpio
+            ).first()
+
+            if existing_codigo:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Este código QR ya está asignado a la máquina '{existing_codigo.nombre}'"
+                )
+
         new_machine = Machine(
             nombre=nombre.strip(),
+            codigo=codigo_limpio,
             activo=True,
         )
         
@@ -769,6 +790,7 @@ def create_machine(
             "machine": {
                 "id": str(new_machine.id),
                 "nombre": new_machine.nombre,
+                "codigo": new_machine.codigo,
                 "activo": new_machine.activo,
             },
             "message": "Máquina creada exitosamente"
@@ -810,6 +832,7 @@ def toggle_machine_status(
             "machine": {
                 "id": str(machine.id),
                 "nombre": machine.nombre,
+                "codigo": getattr(machine, "codigo", None),
                 "activo": machine.activo,
             },
             "message": f"Máquina {'activada' if machine.activo else 'desactivada'} exitosamente"
@@ -866,10 +889,11 @@ def delete_machine(
 def update_machine(
     machine_id: str,
     nombre: str,
+    codigo: str = None,
     db: Session = Depends(get_db),
 ):
     """
-    Update machine name
+    Update machine name and/or QR code
     """
     try:
         machine = db.query(Machine).filter(Machine.id == machine_id).first()
@@ -891,7 +915,26 @@ def update_machine(
                 status_code=400,
                 detail="Ya existe otra máquina con ese nombre"
             )
-        
+
+        codigo_limpio = codigo.strip() if codigo else None
+
+        # =====================================
+        # CHECK IF QR CODE BELONGS TO ANOTHER MACHINE
+        # =====================================
+        if codigo_limpio:
+            existing_codigo = db.query(Machine).filter(
+                Machine.codigo == codigo_limpio,
+                Machine.id != machine_id
+            ).first()
+
+            if existing_codigo:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Este código QR ya está asignado a la máquina '{existing_codigo.nombre}'"
+                )
+
+            machine.codigo = codigo_limpio
+
         machine.nombre = nombre.strip()
         db.commit()
         
@@ -900,6 +943,7 @@ def update_machine(
             "machine": {
                 "id": str(machine.id),
                 "nombre": machine.nombre,
+                "codigo": machine.codigo,
                 "activo": machine.activo,
             },
             "message": "Máquina actualizada exitosamente"
