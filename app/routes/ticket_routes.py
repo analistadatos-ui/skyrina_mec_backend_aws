@@ -704,9 +704,18 @@ async def close_ticket(
         ticket.closed_at = func.now()
         ticket.closed_by = uuid.UUID(closed_by)
 
+        # Persist closing photos so the S3 keys aren't orphaned.
+        # We reuse the TicketValidacion table (same as /validate) —
+        # the "close/" prefix in the keys distinguishes them.
         if photo_paths:
-            # Store closing photos in validation record or separate table
-            pass
+            cierre_record = TicketValidacion(
+                ticket_id=ticket.id,
+                validado_por=uuid.UUID(closed_by),
+                comentario=comentario or "Fotos de cierre",
+                fotos=photo_paths,
+                validated_at=func.now(),
+            )
+            db.add(cierre_record)
 
         historial = TicketHistorial(
             ticket_id=ticket.id,
