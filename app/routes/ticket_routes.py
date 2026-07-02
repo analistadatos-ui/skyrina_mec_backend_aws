@@ -817,3 +817,80 @@ def get_ticket_image(
 
     # Redirect the browser straight to the temporary S3 URL
     return RedirectResponse(url)
+
+
+# ==========================================
+# GET VALIDATION / CLOSING PHOTOS (presigned)
+# GET /tickets/{ticket_id}/validacion-fotos
+# ==========================================
+# Returns short-lived presigned URLs for every photo attached during
+# validation ("validations/" keys) or closing ("close/" keys) of the
+# ticket, so RH can review the evidence without the bucket being public.
+#
+# Response: { success, fotos: [ { url, tipo, comentario, fecha } ] }
+# ==========================================
+@router.get("/{ticket_id}/validacion-fotos")
+def get_validacion_fotos(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        ticket_uuid = uuid.UUID(ticket_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID de ticket inválido")
+
+    bucket = os.environ.get("UPLOADS_BUCKET")
+    region = os.environ.get("AWS_REGION", "mx-central-1")
+
+    if not bucket:
+        raise HTTPException(status_code=500, detail="UPLOADS_BUCKET no configurado")
+
+    registros = (
+        db.query(TicketValidacion)
+        .filter(TicketValidacion.ticket_id == ticket_uuid)
+        .order_by(TicketValidacion.validated_at.asc())
+        .all()
+    )
+
+    # Same client config as /image: mx-central-1 needs the explicit
+    # regional endpoint + s3v4 signing for presigned URLs to work.
+    s3 = boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=f"https://s3.{region}.amazonaws.com",
+        config=BotoConfig(
+            signature_version="s3v4",
+            s3={"addressing_style": "virtual"},
+        ),
+    )
+
+    fotos = []
+    for registro in registros:
+        keys = registro.fotos or []
+        for key in keys:
+            if not key:
+                continue
+            try:
+                url = s3.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": bucket,
+                        "Key": key,
+                        "ResponseContentType": "image/jpeg",
+                        "ResponseContentDisposition": "inline",
+                    },
+                    ExpiresIn=3600,
+                )
+            except Exception as e:
+                print(f"Error presigning validation photo {key}: {e}")
+                continue
+
+            fotos.append({
+                "url": url,
+                # "close/" keys come from Cerrar Ticket, the rest from Validar
+                "tipo": "cierre" if key.startswith("close/") else "validacion",
+                "comentario": registro.comentario,
+                "fecha": str(registro.validated_at) if registro.validated_at else None,
+            })
+
+    return {"success": True, "fotos": fotos}
