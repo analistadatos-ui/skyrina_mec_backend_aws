@@ -639,3 +639,64 @@ async def close_ticket(
         print(f"Error closing ticket: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error closing ticket: {str(e)}")
+
+# ==========================================
+# SERVE TICKET PHOTO (presigned S3 URL)
+# GET /tickets/{ticket_id}/image
+# ==========================================
+# The uploads bucket is PRIVATE, so the browser cannot read the object
+# directly. This endpoint generates a short-lived presigned URL and
+# redirects the browser to it, so the <img> tag can load the photo
+# without making the bucket public.
+#
+# Frontend usage:  <img src={`/api/v1/tickets/${ticket.id}/image`} />
+# ==========================================
+import boto3
+from botocore.config import Config as BotoConfig
+from fastapi.responses import RedirectResponse
+
+
+@router.get("/{ticket_id}/image")
+def get_ticket_image(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+):
+    # Find the ticket's falla record (that's where image_url lives)
+    try:
+        ticket_uuid = uuid.UUID(ticket_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID de ticket inválido")
+
+    falla = (
+        db.query(FallaEquipo)
+        .filter(FallaEquipo.ticket_id == ticket_uuid)
+        .first()
+    )
+
+    if not falla or not falla.image_url:
+        raise HTTPException(status_code=404, detail="Este ticket no tiene imagen")
+
+    key = falla.image_url  # stored S3 object key, e.g. "uploads/abc.jpg"
+    bucket = os.environ.get("UPLOADS_BUCKET")
+    region = os.environ.get("AWS_REGION", "mx-central-1")
+
+    if not bucket:
+        raise HTTPException(status_code=500, detail="UPLOADS_BUCKET no configurado")
+
+    try:
+        s3 = boto3.client(
+            "s3",
+            region_name=region,
+            config=BotoConfig(signature_version="s3v4"),
+        )
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=3600,  # URL valid for 1 hour
+        )
+    except Exception as e:
+        print(f"Error generating presigned URL: {e}")
+        raise HTTPException(status_code=500, detail="No se pudo generar la URL de la imagen")
+
+    # Redirect the browser straight to the temporary S3 URL
+    return RedirectResponse(url)
