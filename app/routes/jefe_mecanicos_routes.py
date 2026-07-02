@@ -20,6 +20,7 @@ from app.models.ticket_model import (
 
 from app.models.user_model import (
     User,
+    MechanicLocation,
 )
 
 from app.models.ticket_asignacion_model import (
@@ -43,12 +44,20 @@ router = APIRouter(
 
 # ==========================================
 # GET LOWEST LOAD MECHANIC
+# Only considers ACTIVE mechanics currently
+# on the floor (piso). Mechanics in taller
+# are excluded from auto-assignment — if no
+# piso mechanic is available, returns None
+# and the ticket stays "pendiente" for
+# manual assignment.
 # ==========================================
 def get_lowest_load_mechanic(
     db: Session
 ):
     mechanics = db.query(User).filter(
-        User.role == "mecanico"
+        User.role == "mecanico",
+        User.current_location == MechanicLocation.piso,
+        User.status == True,
     ).all()
 
     if not mechanics:
