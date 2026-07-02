@@ -19,7 +19,22 @@ import uuid
 
 import boto3
 
-_s3 = boto3.client("s3")
+# Pin the S3 client to the bucket's region with the explicit regional
+# endpoint. Newer regions like mx-central-1 reject requests/presigned URLs
+# signed against the wrong (default) endpoint with
+# IllegalLocationConstraintException.
+from botocore.config import Config as _BotoConfig
+
+_REGION = os.getenv("AWS_REGION", "mx-central-1")
+_s3 = boto3.client(
+    "s3",
+    region_name=_REGION,
+    endpoint_url=f"https://s3.{_REGION}.amazonaws.com",
+    config=_BotoConfig(
+        signature_version="s3v4",
+        s3={"addressing_style": "virtual"},
+    ),
+)
 
 UPLOADS_BUCKET = os.getenv("UPLOADS_BUCKET")
 UPLOADS_CDN_BASE = os.getenv("UPLOADS_CDN_BASE", "").rstrip("/")

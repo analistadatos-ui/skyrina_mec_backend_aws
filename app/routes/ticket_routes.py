@@ -676,7 +676,7 @@ def get_ticket_image(
     if not falla or not falla.image_url:
         raise HTTPException(status_code=404, detail="Este ticket no tiene imagen")
 
-    key = falla.image_url  # stored S3 object key, e.g. "uploads/abc.jpg"
+    key = falla.image_url  # stored S3 object key, e.g. "abc.jpg"
     bucket = os.environ.get("UPLOADS_BUCKET")
     region = os.environ.get("AWS_REGION", "mx-central-1")
 
@@ -684,10 +684,19 @@ def get_ticket_image(
         raise HTTPException(status_code=500, detail="UPLOADS_BUCKET no configurado")
 
     try:
+        # IMPORTANT: newer regions like mx-central-1 require the S3 client to be
+        # pinned to the correct regional endpoint AND use s3v4 signing + regional
+        # addressing. Without the explicit endpoint_url, the presigned URL gets
+        # signed against the wrong endpoint and S3 rejects it with
+        # IllegalLocationConstraintException.
         s3 = boto3.client(
             "s3",
             region_name=region,
-            config=BotoConfig(signature_version="s3v4"),
+            endpoint_url=f"https://s3.{region}.amazonaws.com",
+            config=BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "virtual"},
+            ),
         )
         url = s3.generate_presigned_url(
             "get_object",
