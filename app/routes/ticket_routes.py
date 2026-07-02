@@ -700,7 +700,17 @@ def get_ticket_image(
         )
         url = s3.generate_presigned_url(
             "get_object",
-            Params={"Bucket": bucket, "Key": key},
+            Params={
+                "Bucket": bucket,
+                "Key": key,
+                # The stored objects have a bad Content-Type (e.g. "jpg" instead
+                # of "image/jpeg"), which makes browsers refuse to render them.
+                # Override the response content-type on the way out so the image
+                # always displays correctly — fixes existing AND future photos
+                # without needing to re-upload anything.
+                "ResponseContentType": "image/jpeg",
+                "ResponseContentDisposition": "inline",
+            },
             ExpiresIn=3600,  # URL valid for 1 hour
         )
     except Exception as e:
