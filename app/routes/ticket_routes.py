@@ -27,6 +27,7 @@ from app.models.ticket_historial_model import TicketHistorial
 from app.models.ticket_comentario_model import TicketComentario
 from app.models.ticket_validation_model import TicketValidacion
 from app.models.user_model import User
+from app.models.tipo_falla_model import TipoFalla
 
 from app.routes.jefe_mecanicos_routes import get_lowest_load_mechanic
 
@@ -391,6 +392,94 @@ def get_tickets_by_linea(
 
     except Exception as e:
         print(f"Error getting tickets by linea: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# GET FAILURE TYPES
+# NOTE: must be declared BEFORE "/{ticket_id}"
+# or FastAPI will match "tipos-falla" as a
+# ticket_id and fail on uuid.UUID().
+# ==========================================
+@router.get("/tipos-falla")
+def get_tipos_falla(db: Session = Depends(get_db)):
+    try:
+        tipos = (
+            db.query(TipoFalla)
+            .filter(TipoFalla.activo == True)
+            .order_by(TipoFalla.nombre.asc())
+            .all()
+        )
+        return {
+            "success": True,
+            "tipos_falla": [
+                {"id": str(t.id), "nombre": t.nombre} for t in tipos
+            ],
+        }
+    except Exception as e:
+        print(f"Error getting tipos de falla: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# CREATE FAILURE TYPE
+# Called from the "Agregar tipo de falla"
+# modal in NuevaFallaPage.
+# ==========================================
+@router.post("/tipos-falla")
+def create_tipo_falla(
+    nombre: str = Form(...),
+    created_by: str = Form(None),
+    db: Session = Depends(get_db),
+):
+    try:
+        nombre = nombre.strip()
+        if not nombre:
+            raise HTTPException(
+                status_code=400, detail="El nombre de la falla es requerido"
+            )
+        if len(nombre) > 100:
+            raise HTTPException(
+                status_code=400, detail="El nombre no puede exceder 100 caracteres"
+            )
+
+        # Case-insensitive duplicate check: if it already exists,
+        # return it as a success so the frontend just selects it.
+        existing = (
+            db.query(TipoFalla)
+            .filter(func.lower(TipoFalla.nombre) == nombre.lower())
+            .first()
+        )
+        if existing:
+            if not existing.activo:
+                existing.activo = True
+                db.commit()
+                db.refresh(existing)
+            return {
+                "success": True,
+                "tipo_falla": {"id": str(existing.id), "nombre": existing.nombre},
+            }
+
+        tipo = TipoFalla(nombre=nombre)
+        if created_by:
+            try:
+                tipo.created_by = uuid.UUID(created_by)
+            except (ValueError, TypeError):
+                pass  # created_by is optional; ignore malformed ids
+
+        db.add(tipo)
+        db.commit()
+        db.refresh(tipo)
+
+        return {
+            "success": True,
+            "tipo_falla": {"id": str(tipo.id), "nombre": tipo.nombre},
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Error creating tipo de falla: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
