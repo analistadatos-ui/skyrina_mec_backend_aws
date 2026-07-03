@@ -1,3 +1,4 @@
+# app/routes/jefe_mecanicos_routes.py
 import uuid
 
 from fastapi import (
@@ -35,6 +36,11 @@ from app.models.ticket_historial_model import (
 from app.models.ticket_comentario_model import (
     TicketComentario,
 )
+
+# ==========================================
+# IMPORT PUSH NOTIFICATION MODULE
+# ==========================================
+from app.core.push import send_push
 
 router = APIRouter(
     prefix="/jefe-mecanicos",
@@ -272,7 +278,7 @@ def get_closed_tickets(
 
 
 # ==========================================
-# AUTO ASSIGN MECHANIC
+# AUTO ASSIGN MECHANIC (UPDATED WITH PUSH)
 # ==========================================
 @router.post("/tickets/asignar")
 def assign_mechanic(
@@ -333,6 +339,22 @@ def assign_mechanic(
 
         db.commit()
 
+        # ==========================================
+        # 🔔 SEND PUSH NOTIFICATION TO MECHANIC
+        # ==========================================
+        try:
+            sent = send_push(
+                db,
+                user_id=mechanic.id,
+                title="🔧 Nuevo ticket asignado",
+                body=f"Ticket #{ticket.ticket_number}: {ticket.titulo}",
+                url="/mecanico",
+            )
+            print(f"✅ Push notification sent to {mechanic.nombre} ({mechanic.id}) - {sent} devices")
+        except Exception as e:
+            # Don't fail the request if push fails
+            print(f"❌ Push notification failed for ticket {ticket_id}: {e}")
+
         return {
             "success": True,
             "assigned_mechanic": {
@@ -355,7 +377,7 @@ def assign_mechanic(
 
 
 # ==========================================
-# REASSIGN TICKET
+# REASSIGN TICKET (UPDATED WITH PUSH)
 # ==========================================
 @router.post("/tickets/reasignar")
 def reassign_ticket(
@@ -420,6 +442,22 @@ def reassign_ticket(
         db.add(historial)
 
         db.commit()
+
+        # ==========================================
+        # 🔔 SEND PUSH NOTIFICATION TO NEW MECHANIC
+        # ==========================================
+        try:
+            sent = send_push(
+                db,
+                user_id=new_mechanic.id,
+                title="🔄 Ticket reasignado",
+                body=f"Ticket #{ticket.ticket_number}: {ticket.titulo}",
+                url="/mecanico",
+            )
+            print(f"✅ Push notification sent to {new_mechanic.nombre} ({new_mechanic.id}) - {sent} devices")
+        except Exception as e:
+            # Don't fail the request if push fails
+            print(f"❌ Push notification failed for reassign {ticket_id}: {e}")
 
         return {
             "success": True,
@@ -1021,7 +1059,7 @@ def get_protocols(
 
 @router.post("/protocolos")
 def create_protocol(
-    protocol: ProtocolCreate,  # Changed to accept JSON body
+    protocol: ProtocolCreate,
     db: Session = Depends(get_db),
 ):
     """
@@ -1096,7 +1134,7 @@ def create_protocol(
 @router.put("/protocolos/{protocol_id}")
 def update_protocol(
     protocol_id: str,
-    protocol: ProtocolUpdate,  # Changed to accept JSON body
+    protocol: ProtocolUpdate,
     db: Session = Depends(get_db),
 ):
     """
