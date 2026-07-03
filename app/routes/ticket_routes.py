@@ -41,6 +41,9 @@ router = APIRouter(
 # which we save in the database in place of the old local path.
 from app.core.s3 import upload_fileobj
 
+# Web Push notifications (best-effort; never breaks the request)
+from app.core.push import send_push
+
 
 # ==========================================
 # GENERATE TICKET NUMBER
@@ -132,6 +135,19 @@ async def create_falla_equipo_ticket(
         db.commit()
         db.refresh(ticket)
 
+        # Notify the assigned mechanic on their phone
+        if mechanic:
+            try:
+                send_push(
+                    db,
+                    user_id=mechanic.id,
+                    title="\U0001F527 Nuevo ticket asignado",
+                    body=f"{titulo} \u00b7 {maquina_nombre} \u00b7 {area}",
+                    url="/mecanico",
+                )
+            except Exception as e:
+                print(f"Push notification failed (falla creation): {e}")
+
         return {
             "success": True,
             "message": "Equipment failure ticket created successfully",
@@ -217,6 +233,19 @@ async def create_cambio_estilo_ticket(
 
         db.commit()
         db.refresh(ticket)
+
+        # Notify the assigned mechanic on their phone
+        if mechanic:
+            try:
+                send_push(
+                    db,
+                    user_id=mechanic.id,
+                    title="\U0001F504 Nuevo cambio de estilo",
+                    body=f"{titulo} \u00b7 {estilo_actual} \u2192 {nuevo_estilo}",
+                    url="/mecanico",
+                )
+            except Exception as e:
+                print(f"Push notification failed (cambio estilo): {e}")
 
         return {
             "success": True,

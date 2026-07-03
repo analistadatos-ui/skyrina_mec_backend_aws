@@ -29,12 +29,17 @@ from app.models.falla_equipo_model import FallaEquipo
 from app.models.cambio_estilo_model import CambioEstilo
 from app.models.ticket_historial_model import TicketHistorial
 from app.models.ticket_comentario_model import TicketComentario
+from app.models.tipo_falla_model import TipoFalla
+from app.models.push_subscription_model import PushSubscription
 
 # Import routes
 from app.routes import auth_routes, supervisor_routes, ticket_routes
 from app.routes.mecanico_routes import router as mecanico_router
 from app.routes.jefe_mecanicos_routes import router as jefe_mecanicos_router
 from app.routes.rh_routes import router as rh_router
+from app.routes import notification_routes
+
+
 
 # Configuration from environment
 API_PREFIX = os.getenv("API_PREFIX", "/api/v1")
@@ -111,6 +116,8 @@ app.include_router(mecanico_router, prefix=API_PREFIX, tags=["Mechanic"])
 app.include_router(ticket_routes.router, prefix=API_PREFIX, tags=["Tickets"])
 app.include_router(jefe_mecanicos_router, prefix=API_PREFIX, tags=["Head Mechanic"])
 app.include_router(rh_router, prefix=API_PREFIX, tags=["RH"])
+app.include_router(notification_routes.router, prefix="/api/v1")
+
 
 
 @app.get("/", include_in_schema=False)

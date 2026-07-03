@@ -25,6 +25,9 @@ from app.models.falla_equipo_model import (
     FallaEquipo,
 )
 
+# Web Push notifications (best-effort; never breaks the request)
+from app.core.push import send_push
+
 router = APIRouter(
     prefix="/mecanico",
     tags=["Mecanico"],
@@ -285,6 +288,27 @@ def complete_ticket(
     db.commit()
 
     db.refresh(ticket)
+
+    # =====================================
+    # NOTIFY JEFE DE LINEA (validation pending)
+    # =====================================
+    try:
+        if ticket.linea_id:
+            jefes = db.query(User).filter(
+                User.linea_id == ticket.linea_id,
+                User.role == "jefe_linea",
+            ).all()
+
+            for jefe in jefes:
+                send_push(
+                    db,
+                    user_id=jefe.id,
+                    title="\u2705 Ticket completado",
+                    body=f"{ticket.ticket_number} listo para validar \u00b7 {ticket.resolution_minutes or 0} min",
+                    url="/jefe-linea",
+                )
+    except Exception as e:
+        print(f"Push notification failed (complete): {e}")
 
     return {
 
