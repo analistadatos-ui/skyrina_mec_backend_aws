@@ -767,6 +767,80 @@ async def close_ticket(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error closing ticket: {str(e)}")
 
+
+# ==========================================
+# DELETE TICKET (JEFE DE LÍNEA)
+# DELETE /tickets/{ticket_id}?deleted_by=<user_id>
+#
+# Only tickets that have NOT been completed/validated/
+# closed can be deleted (i.e. pendiente, asignado,
+# en_proceso). Once a mechanic finished the work we keep
+# the record for metrics/audit.
+#
+# Child rows (asignaciones, historial, comentarios,
+# validaciones, falla/cambio details) are removed first
+# so foreign-key constraints don't block the delete.
+# ==========================================
+@router.delete("/{ticket_id}")
+def delete_ticket(
+    ticket_id: str,
+    deleted_by: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        try:
+            ticket_uuid = uuid.UUID(ticket_id)
+            deleted_by_uuid = uuid.UUID(deleted_by)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="ID inválido")
+
+        ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
+
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+        # Protect finished work — only unfinished tickets can be deleted
+        if ticket.status in [
+            TicketStatus.completado,
+            TicketStatus.validado,
+            TicketStatus.cerrado,
+        ]:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No se puede eliminar un ticket completado, validado o cerrado. "
+                    f"Estado actual: {ticket.status.value if hasattr(ticket.status, 'value') else ticket.status}"
+                ),
+            )
+
+        # Delete child records first (FK constraints)
+        db.query(TicketAsignacion).filter(TicketAsignacion.ticket_id == ticket.id).delete(synchronize_session=False)
+        db.query(TicketHistorial).filter(TicketHistorial.ticket_id == ticket.id).delete(synchronize_session=False)
+        db.query(TicketComentario).filter(TicketComentario.ticket_id == ticket.id).delete(synchronize_session=False)
+        db.query(TicketValidacion).filter(TicketValidacion.ticket_id == ticket.id).delete(synchronize_session=False)
+        db.query(FallaEquipo).filter(FallaEquipo.ticket_id == ticket.id).delete(synchronize_session=False)
+        db.query(CambioEstilo).filter(CambioEstilo.ticket_id == ticket.id).delete(synchronize_session=False)
+
+        ticket_number = ticket.ticket_number
+        db.delete(ticket)
+        db.commit()
+
+        print(f"Ticket {ticket_number} deleted by user {deleted_by_uuid}")
+
+        return {
+            "success": True,
+            "message": f"Ticket {ticket_number} eliminado correctamente",
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        print(f"Error deleting ticket: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error deleting ticket: {str(e)}")
+
+
 # ==========================================
 # SERVE TICKET PHOTO (presigned S3 URL)
 # GET /tickets/{ticket_id}/image
