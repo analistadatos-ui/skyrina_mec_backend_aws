@@ -37,6 +37,10 @@ from app.models.ticket_comentario_model import (
     TicketComentario,
 )
 
+# Needed to show line number and machine info on dashboard tickets
+from app.models.linea_model import Linea
+from app.models.falla_equipo_model import FallaEquipo
+
 # ==========================================
 # IMPORT PUSH NOTIFICATION MODULE
 # ==========================================
@@ -144,6 +148,9 @@ def get_pending_tickets(
 
         print(f"Found {len(tickets)} pending tickets")
 
+        # Prefetch line numbers once (few lines, avoids a query per ticket)
+        lineas = {str(l.id): l.numero for l in db.query(Linea).all()}
+
         response = []
         
         for ticket in tickets:
@@ -159,6 +166,10 @@ def get_pending_tickets(
                     ubicacion_value = ticket.ubicacion.value
                 elif ticket.ubicacion:
                     ubicacion_value = str(ticket.ubicacion)
+
+            # Line number + machine info (machine only exists for fallas)
+            linea_numero = lineas.get(str(ticket.linea_id)) if ticket.linea_id else None
+            falla = db.query(FallaEquipo).filter(FallaEquipo.ticket_id == ticket.id).first()
             
             response.append({
                 "id": str(ticket.id),
@@ -172,6 +183,9 @@ def get_pending_tickets(
                 "assigned_to": str(ticket.assigned_to) if ticket.assigned_to else None,
                 "assigned_mechanic_name": mechanic_name,
                 "created_at": ticket.created_at,
+                "linea_numero": linea_numero,
+                "maquina_nombre": falla.maquina_nombre if falla else None,
+                "maquina_codigo": falla.maquina_codigo if falla else None,
             })
 
         return {
@@ -206,6 +220,9 @@ def get_completed_tickets(
         
         print(f"Found {len(tickets)} completed/validated/closed tickets")
 
+        # Prefetch line numbers once (few lines, avoids a query per ticket)
+        lineas = {str(l.id): l.numero for l in db.query(Linea).all()}
+
         response = []
         
         for ticket in tickets:
@@ -218,6 +235,10 @@ def get_completed_tickets(
             solution_desc = getattr(ticket, 'solution_description', None)
             resolution_min = getattr(ticket, 'resolution_minutes', None)
             is_delayed = getattr(ticket, 'delayed', False)
+
+            # Line number + machine info (machine only exists for fallas)
+            linea_numero = lineas.get(str(ticket.linea_id)) if ticket.linea_id else None
+            falla = db.query(FallaEquipo).filter(FallaEquipo.ticket_id == ticket.id).first()
             
             response.append({
                 "id": str(ticket.id),
@@ -232,6 +253,9 @@ def get_completed_tickets(
                 "mechanic_name": mechanic_name,
                 "completed_at": ticket.completed_at,
                 "closed_at": ticket.closed_at,
+                "linea_numero": linea_numero,
+                "maquina_nombre": falla.maquina_nombre if falla else None,
+                "maquina_codigo": falla.maquina_codigo if falla else None,
             })
         
         return {
