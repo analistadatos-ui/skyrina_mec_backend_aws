@@ -44,6 +44,34 @@ from app.core.s3 import upload_fileobj
 # Web Push notifications (best-effort; never breaks the request)
 from app.core.push import send_push
 
+import threading
+
+# ==========================================
+# PUSH WITH TIMEOUT
+# send_push makes blocking HTTP calls to the browsers' push
+# services. A stale/dead subscription can hang for 20-30s,
+# which pushes the whole request past API Gateway's hard 29s
+# limit and the client gets "Endpoint request timed out"
+# even though the ticket WAS created. Run the push in a
+# worker thread and wait at most a few seconds — creating
+# the ticket matters more than the notification.
+# ==========================================
+def run_push_with_timeout(push_fn, timeout_seconds=5):
+    done = threading.Event()
+
+    def _worker():
+        try:
+            push_fn()
+        except Exception as e:
+            print(f"Push notification failed: {e}")
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    if not done.wait(timeout_seconds):
+        print("Push notification timed out — responding without waiting for it")
+
 
 # ==========================================
 # GENERATE TICKET NUMBER
@@ -136,17 +164,15 @@ async def create_falla_equipo_ticket(
         db.refresh(ticket)
 
         # Notify the assigned mechanic on their phone
+        # (capped at 5s so a hanging push can't time out the request)
         if mechanic:
-            try:
-                send_push(
-                    db,
-                    user_id=mechanic.id,
-                    title="\U0001F527 Nuevo ticket asignado",
-                    body=f"{titulo} \u00b7 {maquina_nombre} \u00b7 {area}",
-                    url="/mecanico",
-                )
-            except Exception as e:
-                print(f"Push notification failed (falla creation): {e}")
+            run_push_with_timeout(lambda: send_push(
+                db,
+                user_id=mechanic.id,
+                title="\U0001F527 Nuevo ticket asignado",
+                body=f"{titulo} \u00b7 {maquina_nombre} \u00b7 {area}",
+                url="/mecanico",
+            ))
 
         return {
             "success": True,
@@ -235,17 +261,15 @@ async def create_cambio_estilo_ticket(
         db.refresh(ticket)
 
         # Notify the assigned mechanic on their phone
+        # (capped at 5s so a hanging push can't time out the request)
         if mechanic:
-            try:
-                send_push(
-                    db,
-                    user_id=mechanic.id,
-                    title="\U0001F504 Nuevo cambio de estilo",
-                    body=f"{titulo} \u00b7 {estilo_actual} \u2192 {nuevo_estilo}",
-                    url="/mecanico",
-                )
-            except Exception as e:
-                print(f"Push notification failed (cambio estilo): {e}")
+            run_push_with_timeout(lambda: send_push(
+                db,
+                user_id=mechanic.id,
+                title="\U0001F504 Nuevo cambio de estilo",
+                body=f"{titulo} \u00b7 {estilo_actual} \u2192 {nuevo_estilo}",
+                url="/mecanico",
+            ))
 
         return {
             "success": True,

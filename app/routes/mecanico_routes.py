@@ -28,6 +28,33 @@ from app.models.falla_equipo_model import (
 # Web Push notifications (best-effort; never breaks the request)
 from app.core.push import send_push
 
+import threading
+
+# ==========================================
+# PUSH WITH TIMEOUT
+# send_push makes blocking HTTP calls to the browsers' push
+# services. A stale/dead subscription can hang for 20-30s,
+# which pushes the whole request past API Gateway's hard 29s
+# limit and the client gets "Endpoint request timed out"
+# even though the work WAS saved. Run the push in a worker
+# thread and wait at most a few seconds.
+# ==========================================
+def run_push_with_timeout(push_fn, timeout_seconds=5):
+    done = threading.Event()
+
+    def _worker():
+        try:
+            push_fn()
+        except Exception as e:
+            print(f"Push notification failed: {e}")
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    if not done.wait(timeout_seconds):
+        print("Push notification timed out — responding without waiting for it")
+
 router = APIRouter(
     prefix="/mecanico",
     tags=["Mecanico"],
@@ -291,6 +318,8 @@ def complete_ticket(
 
     # =====================================
     # NOTIFY JEFE DE LINEA (validation pending)
+    # Capped at 5s total so hanging push
+    # subscriptions can't time out the request
     # =====================================
     try:
         if ticket.linea_id:
@@ -299,14 +328,17 @@ def complete_ticket(
                 User.role == "jefe_linea",
             ).all()
 
-            for jefe in jefes:
-                send_push(
-                    db,
-                    user_id=jefe.id,
-                    title="\u2705 Ticket completado",
-                    body=f"{ticket.ticket_number} listo para validar \u00b7 {ticket.resolution_minutes or 0} min",
-                    url="/jefe-linea",
-                )
+            def _notify_jefes():
+                for jefe in jefes:
+                    send_push(
+                        db,
+                        user_id=jefe.id,
+                        title="\u2705 Ticket completado",
+                        body=f"{ticket.ticket_number} listo para validar \u00b7 {ticket.resolution_minutes or 0} min",
+                        url="/jefe-linea",
+                    )
+
+            run_push_with_timeout(_notify_jefes)
     except Exception as e:
         print(f"Push notification failed (complete): {e}")
 

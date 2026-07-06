@@ -42,6 +42,33 @@ from app.models.ticket_comentario_model import (
 # ==========================================
 from app.core.push import send_push
 
+import threading
+
+# ==========================================
+# PUSH WITH TIMEOUT
+# send_push makes blocking HTTP calls to the browsers' push
+# services. A stale/dead subscription can hang for 20-30s,
+# which pushes the whole request past API Gateway's hard 29s
+# limit and the client gets "Endpoint request timed out"
+# even though the work WAS saved. Run the push in a worker
+# thread and wait at most a few seconds.
+# ==========================================
+def run_push_with_timeout(push_fn, timeout_seconds=5):
+    done = threading.Event()
+
+    def _worker():
+        try:
+            push_fn()
+        except Exception as e:
+            print(f"Push notification failed: {e}")
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    if not done.wait(timeout_seconds):
+        print("Push notification timed out — responding without waiting for it")
+
 router = APIRouter(
     prefix="/jefe-mecanicos",
     tags=["Jefe Mecánicos"],
@@ -341,8 +368,9 @@ def assign_mechanic(
 
         # ==========================================
         # 🔔 SEND PUSH NOTIFICATION TO MECHANIC
+        # (capped at 5s so a hanging push can't time out the request)
         # ==========================================
-        try:
+        def _notify_assigned():
             sent = send_push(
                 db,
                 user_id=mechanic.id,
@@ -351,9 +379,8 @@ def assign_mechanic(
                 url="/mecanico",
             )
             print(f"✅ Push notification sent to {mechanic.nombre} ({mechanic.id}) - {sent} devices")
-        except Exception as e:
-            # Don't fail the request if push fails
-            print(f"❌ Push notification failed for ticket {ticket_id}: {e}")
+
+        run_push_with_timeout(_notify_assigned)
 
         return {
             "success": True,
@@ -445,8 +472,9 @@ def reassign_ticket(
 
         # ==========================================
         # 🔔 SEND PUSH NOTIFICATION TO NEW MECHANIC
+        # (capped at 5s so a hanging push can't time out the request)
         # ==========================================
-        try:
+        def _notify_reassigned():
             sent = send_push(
                 db,
                 user_id=new_mechanic.id,
@@ -455,9 +483,8 @@ def reassign_ticket(
                 url="/mecanico",
             )
             print(f"✅ Push notification sent to {new_mechanic.nombre} ({new_mechanic.id}) - {sent} devices")
-        except Exception as e:
-            # Don't fail the request if push fails
-            print(f"❌ Push notification failed for reassign {ticket_id}: {e}")
+
+        run_push_with_timeout(_notify_reassigned)
 
         return {
             "success": True,
