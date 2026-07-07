@@ -80,39 +80,52 @@ router = APIRouter(
 
 
 # ==========================================
-# GET LOWEST LOAD MECHANIC (FAIR ROUND-ROBIN)
+# GET LOWEST LOAD MECHANIC (EXPERIENCE PRIORITY)
 # Only considers ACTIVE mechanics currently
-# on the floor (piso). Mechanics in taller
-# are excluded from auto-assignment — if no
-# piso mechanic is available, returns None
+# on the floor (piso). Mechanics in taller or
+# muestras are excluded from auto-assignment —
+# if no piso mechanic is available, returns None
 # and the ticket stays "pendiente" for
 # manual assignment.
 #
-# FAIRNESS LOGIC:
-# The old version only counted currently-open
-# tickets, so a mechanic who closes tickets
-# quickly could rack up 10+ tickets over time
-# and still keep getting new ones as soon as
-# their open count hit 0. That's not fair load
-# balancing — it's just "whoever's queue is
-# empty right now."
+# ASSIGNMENT LOGIC:
+# Tickets go to the most senior AVAILABLE mechanic,
+# where "available" means they have no currently
+# open ticket. Concretely, mechanics are ranked by:
+#   1) current open-ticket count, ascending — a
+#      free mechanic (0 open tickets) is always
+#      preferred over a busy one, regardless of
+#      seniority.
+#   2) experience_rank, ascending, as the tie-break
+#      among equally-busy mechanics — lower number =
+#      more senior = picked first. Mechanics with no
+#      rank set are treated as least senior among
+#      regular mecanicos.
+#   3) time since last assignment, as a final
+#      tie-break for mechanics tied on both of the
+#      above.
 #
-# This version ranks mechanics by:
-#   1) total tickets ever assigned to them
-#      (lifetime count, any status) — the
-#      mechanic with the FEWEST total tickets
-#      gets the next one. This is the main
-#      driver, e.g. A=10, B=3, C=1 -> C wins.
-#      A only becomes eligible again once B
-#      and C have caught up to A's total.
-#   2) tie-breaker: fewest tickets currently
-#      open (so we don't dump a new ticket on
-#      someone already juggling several, even
-#      if their lifetime totals are tied).
-#   3) tie-breaker: longest time since their
-#      last assignment (whoever's waited the
-#      longest goes first).
+# This reproduces, e.g.: ticket 1 -> most senior
+# mecanico (everyone free, rank wins). Ticket 2 ->
+# next most senior, since the first is now busy.
+# And so on down the seniority list as each
+# mechanic picks up a ticket.
+#
+# JEFE_MECANICOS FALLBACK:
+# A jefe_mecanicos (e.g. the floor supervisor) is
+# normally NOT a ticket-taking mechanic and is
+# excluded by role from every other endpoint in
+# this file. For auto-assignment specifically, they
+# ARE included in the candidate pool, but pinned to
+# the lowest priority tier (rank 9999) — so they
+# only receive a ticket once every regular mecanico
+# already has at least one open ticket (i.e. none of
+# them are "free" per the active-count check above).
 # ==========================================
+JEFE_FALLBACK_RANK = 9999
+DEFAULT_UNRANKED_MECHANIC_RANK = 500  # unranked mecanicos still beat any jefe fallback
+
+
 def get_lowest_load_mechanic(
     db: Session
 ):
@@ -122,29 +135,26 @@ def get_lowest_load_mechanic(
         User.status == True,
     ).all()
 
-    if not mechanics:
+    jefes = db.query(User).filter(
+        User.role == "jefe_mecanicos",
+        User.current_location == MechanicLocation.piso,
+        User.status == True,
+    ).all()
+
+    all_candidates = mechanics + jefes
+
+    if not all_candidates:
         return None
 
-    mechanic_ids = [m.id for m in mechanics]
+    candidate_ids = [c.id for c in all_candidates]
 
-    # 1) Lifetime ticket count per mechanic (any status — this is the
-    #    fairness counter that makes sure work evens out over time,
-    #    not just whoever happens to be free right this second).
-    total_rows = db.query(
-        Ticket.assigned_to,
-        func.count(Ticket.id).label("total_count"),
-    ).filter(
-        Ticket.assigned_to.in_(mechanic_ids)
-    ).group_by(Ticket.assigned_to).all()
-
-    total_counts = {row.assigned_to: row.total_count for row in total_rows}
-
-    # 2) Currently open tickets (tie-breaker only)
+    # Currently open tickets per candidate — the main driver. A free
+    # mechanic (0) always beats a busy one, no matter their rank.
     active_rows = db.query(
         Ticket.assigned_to,
         func.count(Ticket.id).label("active_count"),
     ).filter(
-        Ticket.assigned_to.in_(mechanic_ids),
+        Ticket.assigned_to.in_(candidate_ids),
         Ticket.status.in_([
             TicketStatus.asignado,
             TicketStatus.en_proceso,
@@ -154,38 +164,43 @@ def get_lowest_load_mechanic(
 
     active_counts = {row.assigned_to: row.active_count for row in active_rows}
 
-    # 3) Last assignment timestamp per mechanic (tie-breaker only)
+    # Last assignment timestamp — final tie-break only.
     last_assigned_rows = db.query(
         Ticket.assigned_to,
         func.max(Ticket.assigned_at).label("last_assigned"),
     ).filter(
-        Ticket.assigned_to.in_(mechanic_ids)
+        Ticket.assigned_to.in_(candidate_ids)
     ).group_by(Ticket.assigned_to).all()
 
     last_assigned = {row.assigned_to: row.last_assigned for row in last_assigned_rows}
 
     def _last_assigned_sort_value(ts):
-        # Mechanics who have never been assigned anything sort first
-        # (they've "waited" the longest, effectively).
         if ts is None:
             return float("-inf")
         return ts.timestamp()
 
+    def _rank_of(user):
+        if user.role == "jefe_mecanicos":
+            return JEFE_FALLBACK_RANK
+        if user.experience_rank is not None:
+            return user.experience_rank
+        return DEFAULT_UNRANKED_MECHANIC_RANK
+
     candidates = []
-    for mechanic in mechanics:
+    for candidate in all_candidates:
         candidates.append({
-            "mechanic": mechanic,
-            "total_count": total_counts.get(mechanic.id, 0),
-            "active_count": active_counts.get(mechanic.id, 0),
+            "mechanic": candidate,
+            "active_count": active_counts.get(candidate.id, 0),
+            "rank": _rank_of(candidate),
             "last_assigned_sort": _last_assigned_sort_value(
-                last_assigned.get(mechanic.id)
+                last_assigned.get(candidate.id)
             ),
         })
 
     candidates.sort(
         key=lambda x: (
-            x["total_count"],
             x["active_count"],
+            x["rank"],
             x["last_assigned_sort"],
         )
     )
@@ -597,7 +612,16 @@ def reassign_ticket(
 
 # ==========================================
 # UPDATE MECHANIC LOCATION
+# Valid locations: piso, taller, muestras.
+# NOTE: only "piso" mechanics are eligible for
+# ticket auto-assignment (see get_lowest_load_mechanic).
+# Both "taller" and "muestras" are excluded from
+# auto-assign — tickets for those mechanics must
+# be assigned manually.
 # ==========================================
+VALID_MECHANIC_LOCATIONS = {"piso", "taller", "muestras"}
+
+
 @router.post("/mecanicos/location")
 def update_mechanic_location(
     mecanico_id: str,
@@ -605,6 +629,17 @@ def update_mechanic_location(
     db: Session = Depends(get_db),
 ):
     try:
+        location_normalized = location.strip().lower() if location else ""
+
+        if location_normalized not in VALID_MECHANIC_LOCATIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid location '{location}'. "
+                    f"Valid options are: {', '.join(sorted(VALID_MECHANIC_LOCATIONS))}"
+                ),
+            )
+
         mechanic = db.query(User).filter(
             User.id == mecanico_id,
             User.role == "mecanico"
@@ -616,7 +651,7 @@ def update_mechanic_location(
                 detail="Mechanic not found",
             )
 
-        mechanic.current_location = location
+        mechanic.current_location = location_normalized
         db.commit()
 
         return {

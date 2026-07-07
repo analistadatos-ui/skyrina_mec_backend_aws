@@ -6,6 +6,7 @@ from sqlalchemy import (
     String,
     Boolean,
     Enum,
+    Integer,
 )
 
 from sqlalchemy.dialects.postgresql import UUID
@@ -103,4 +104,20 @@ class User(Base):
     status = Column(
         Boolean,
         default=True,
+    )
+
+    # ==========================================
+    # EXPERIENCE RANK
+    # Used by the ticket auto-assign algorithm to
+    # prefer more senior mechanics first. LOWER
+    # number = MORE senior/experienced = assigned
+    # before mechanics with a higher number.
+    # NULL means "no rank set" — treated as lowest
+    # priority among regular mecanicos (but still
+    # above jefe_mecanicos, who are fallback-only
+    # regardless of rank).
+    # ==========================================
+    experience_rank = Column(
+        Integer,
+        nullable=True,
     )
