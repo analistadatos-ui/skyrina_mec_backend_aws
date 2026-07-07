@@ -41,6 +41,8 @@ class MechanicLocation(
 
     taller = "taller"
 
+    muestras = "muestras"
+
 
 class User(Base):
 
