@@ -80,13 +80,38 @@ router = APIRouter(
 
 
 # ==========================================
-# GET LOWEST LOAD MECHANIC
+# GET LOWEST LOAD MECHANIC (FAIR ROUND-ROBIN)
 # Only considers ACTIVE mechanics currently
 # on the floor (piso). Mechanics in taller
 # are excluded from auto-assignment — if no
 # piso mechanic is available, returns None
 # and the ticket stays "pendiente" for
 # manual assignment.
+#
+# FAIRNESS LOGIC:
+# The old version only counted currently-open
+# tickets, so a mechanic who closes tickets
+# quickly could rack up 10+ tickets over time
+# and still keep getting new ones as soon as
+# their open count hit 0. That's not fair load
+# balancing — it's just "whoever's queue is
+# empty right now."
+#
+# This version ranks mechanics by:
+#   1) total tickets ever assigned to them
+#      (lifetime count, any status) — the
+#      mechanic with the FEWEST total tickets
+#      gets the next one. This is the main
+#      driver, e.g. A=10, B=3, C=1 -> C wins.
+#      A only becomes eligible again once B
+#      and C have caught up to A's total.
+#   2) tie-breaker: fewest tickets currently
+#      open (so we don't dump a new ticket on
+#      someone already juggling several, even
+#      if their lifetime totals are tied).
+#   3) tie-breaker: longest time since their
+#      last assignment (whoever's waited the
+#      longest goes first).
 # ==========================================
 def get_lowest_load_mechanic(
     db: Session
@@ -100,28 +125,72 @@ def get_lowest_load_mechanic(
     if not mechanics:
         return None
 
-    mechanic_ticket_counts = []
+    mechanic_ids = [m.id for m in mechanics]
 
+    # 1) Lifetime ticket count per mechanic (any status — this is the
+    #    fairness counter that makes sure work evens out over time,
+    #    not just whoever happens to be free right this second).
+    total_rows = db.query(
+        Ticket.assigned_to,
+        func.count(Ticket.id).label("total_count"),
+    ).filter(
+        Ticket.assigned_to.in_(mechanic_ids)
+    ).group_by(Ticket.assigned_to).all()
+
+    total_counts = {row.assigned_to: row.total_count for row in total_rows}
+
+    # 2) Currently open tickets (tie-breaker only)
+    active_rows = db.query(
+        Ticket.assigned_to,
+        func.count(Ticket.id).label("active_count"),
+    ).filter(
+        Ticket.assigned_to.in_(mechanic_ids),
+        Ticket.status.in_([
+            TicketStatus.asignado,
+            TicketStatus.en_proceso,
+            TicketStatus.pausado,
+        ]),
+    ).group_by(Ticket.assigned_to).all()
+
+    active_counts = {row.assigned_to: row.active_count for row in active_rows}
+
+    # 3) Last assignment timestamp per mechanic (tie-breaker only)
+    last_assigned_rows = db.query(
+        Ticket.assigned_to,
+        func.max(Ticket.assigned_at).label("last_assigned"),
+    ).filter(
+        Ticket.assigned_to.in_(mechanic_ids)
+    ).group_by(Ticket.assigned_to).all()
+
+    last_assigned = {row.assigned_to: row.last_assigned for row in last_assigned_rows}
+
+    def _last_assigned_sort_value(ts):
+        # Mechanics who have never been assigned anything sort first
+        # (they've "waited" the longest, effectively).
+        if ts is None:
+            return float("-inf")
+        return ts.timestamp()
+
+    candidates = []
     for mechanic in mechanics:
-        active_tickets = db.query(Ticket).filter(
-            Ticket.assigned_to == mechanic.id,
-            Ticket.status.in_([
-                TicketStatus.asignado,
-                TicketStatus.en_proceso,
-                TicketStatus.pausado,
-            ])
-        ).count()
-
-        mechanic_ticket_counts.append({
+        candidates.append({
             "mechanic": mechanic,
-            "count": active_tickets,
+            "total_count": total_counts.get(mechanic.id, 0),
+            "active_count": active_counts.get(mechanic.id, 0),
+            "last_assigned_sort": _last_assigned_sort_value(
+                last_assigned.get(mechanic.id)
+            ),
         })
 
-    mechanic_ticket_counts.sort(
-        key=lambda x: x["count"]
+    candidates.sort(
+        key=lambda x: (
+            x["total_count"],
+            x["active_count"],
+            x["last_assigned_sort"],
+        )
     )
 
-    return mechanic_ticket_counts[0]["mechanic"]
+    return candidates[0]["mechanic"]
 
 
 # ==========================================
