@@ -81,12 +81,18 @@ router = APIRouter(
 
 # ==========================================
 # GET LOWEST LOAD MECHANIC (EXPERIENCE PRIORITY)
-# Only considers ACTIVE mechanics currently
-# on the floor (piso). Mechanics in taller or
-# muestras are excluded from auto-assignment —
-# if no piso mechanic is available, returns None
-# and the ticket stays "pendiente" for
-# manual assignment.
+# Only considers ACTIVE mechanics (role='mecanico')
+# currently on the floor (piso). Mechanics in
+# taller or muestras are excluded, as are all
+# jefe_mecanicos users — the "supervisor also
+# takes tickets" role is filled by an ordinary
+# mecanico with the lowest experience_rank
+# (currently Fernando Esteban Lopez at rank 5),
+# not by anyone with role='jefe_mecanicos'.
+#
+# If no piso mecanico is available, returns None
+# and the ticket stays "pendiente" for manual
+# assignment.
 #
 # ASSIGNMENT LOGIC:
 # Tickets go to the most senior AVAILABLE mechanic,
@@ -99,31 +105,17 @@ router = APIRouter(
 #   2) experience_rank, ascending, as the tie-break
 #      among equally-busy mechanics — lower number =
 #      more senior = picked first. Mechanics with no
-#      rank set are treated as least senior among
-#      regular mecanicos.
+#      rank set are treated as least senior.
 #   3) time since last assignment, as a final
 #      tie-break for mechanics tied on both of the
 #      above.
 #
-# This reproduces, e.g.: ticket 1 -> most senior
-# mecanico (everyone free, rank wins). Ticket 2 ->
-# next most senior, since the first is now busy.
-# And so on down the seniority list as each
-# mechanic picks up a ticket.
-#
-# JEFE_MECANICOS FALLBACK:
-# A jefe_mecanicos (e.g. the floor supervisor) is
-# normally NOT a ticket-taking mechanic and is
-# excluded by role from every other endpoint in
-# this file. For auto-assignment specifically, they
-# ARE included in the candidate pool, but pinned to
-# the lowest priority tier (rank 9999) — so they
-# only receive a ticket once every regular mecanico
-# already has at least one open ticket (i.e. none of
-# them are "free" per the active-count check above).
+# This means: ticket 1 -> rank 1 (all free, rank wins).
+# Ticket 2 -> rank 2 (rank 1 now busy). ... Ticket 5
+# -> rank 5. Ticket 6 -> back to rank 1 (everyone has
+# 1 open, rank 1 wins the tie), etc.
 # ==========================================
-JEFE_FALLBACK_RANK = 9999
-DEFAULT_UNRANKED_MECHANIC_RANK = 500  # unranked mecanicos still beat any jefe fallback
+DEFAULT_UNRANKED_MECHANIC_RANK = 500  # mecanicos with no experience_rank sort after ranked ones
 
 
 def get_lowest_load_mechanic(
@@ -135,26 +127,18 @@ def get_lowest_load_mechanic(
         User.status == True,
     ).all()
 
-    jefes = db.query(User).filter(
-        User.role == "jefe_mecanicos",
-        User.current_location == MechanicLocation.piso,
-        User.status == True,
-    ).all()
-
-    all_candidates = mechanics + jefes
-
-    if not all_candidates:
+    if not mechanics:
         return None
 
-    candidate_ids = [c.id for c in all_candidates]
+    mechanic_ids = [m.id for m in mechanics]
 
-    # Currently open tickets per candidate — the main driver. A free
+    # Currently open tickets per mechanic — the main driver. A free
     # mechanic (0) always beats a busy one, no matter their rank.
     active_rows = db.query(
         Ticket.assigned_to,
         func.count(Ticket.id).label("active_count"),
     ).filter(
-        Ticket.assigned_to.in_(candidate_ids),
+        Ticket.assigned_to.in_(mechanic_ids),
         Ticket.status.in_([
             TicketStatus.asignado,
             TicketStatus.en_proceso,
@@ -169,7 +153,7 @@ def get_lowest_load_mechanic(
         Ticket.assigned_to,
         func.max(Ticket.assigned_at).label("last_assigned"),
     ).filter(
-        Ticket.assigned_to.in_(candidate_ids)
+        Ticket.assigned_to.in_(mechanic_ids)
     ).group_by(Ticket.assigned_to).all()
 
     last_assigned = {row.assigned_to: row.last_assigned for row in last_assigned_rows}
@@ -180,20 +164,18 @@ def get_lowest_load_mechanic(
         return ts.timestamp()
 
     def _rank_of(user):
-        if user.role == "jefe_mecanicos":
-            return JEFE_FALLBACK_RANK
         if user.experience_rank is not None:
             return user.experience_rank
         return DEFAULT_UNRANKED_MECHANIC_RANK
 
     candidates = []
-    for candidate in all_candidates:
+    for mechanic in mechanics:
         candidates.append({
-            "mechanic": candidate,
-            "active_count": active_counts.get(candidate.id, 0),
-            "rank": _rank_of(candidate),
+            "mechanic": mechanic,
+            "active_count": active_counts.get(mechanic.id, 0),
+            "rank": _rank_of(mechanic),
             "last_assigned_sort": _last_assigned_sort_value(
-                last_assigned.get(candidate.id)
+                last_assigned.get(mechanic.id)
             ),
         })
 
