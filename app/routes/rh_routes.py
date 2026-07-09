@@ -671,7 +671,7 @@ def reporte_cambios(
             "maquinas_mantienen": 0,
             "maquinas_agregar": 0,
             "mecanico": mecanico_nombre,
-            "motivo": detail.motivo if detail else None,
+            "motivo": detail.observaciones if detail else None,
         })
 
     promedio = round(total_tiempo / tiempo_count, 1) if tiempo_count else 0.0
