@@ -58,7 +58,7 @@ class PrioridadGeneral(str, enum.Enum):
 class TicketLocation(str, enum.Enum):
     piso = "piso"
     taller = "taller"
-
+    muestras = "muestras" 
 
 class Ticket(Base):
     __tablename__ = "tickets"
