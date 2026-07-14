@@ -148,6 +148,18 @@ def compute_kpis(tickets: list, start: datetime, end: datetime,
         and t.created_at.replace(tzinfo=timezone.utc) <= end
     ]
 
+    # Cumulative closed as of the end of this week (no lower bound), mirroring the
+    # cumulative `assigned` filter above. This is ONLY for the dashboard's
+    # "asignados vs cerrados" view, so both sides sit on the same (cumulative)
+    # basis. It is intentionally NOT used by the weekly bonus math below, which
+    # must keep using the week-scoped `closed` list.
+    closed_all = [
+        t for t in tickets
+        if t.status == TicketStatus.cerrado
+        and t.completed_at
+        and t.completed_at.replace(tzinfo=timezone.utc) <= end
+    ]
+
     style_total  = [t for t in assigned if t.tipo == TicketType.cambio_estilo]
     style_closed = [t for t in closed   if t.tipo == TicketType.cambio_estilo]
     delayed      = [t for t in closed   if (t.resolution_minutes or 0) > t100]
@@ -173,6 +185,7 @@ def compute_kpis(tickets: list, start: datetime, end: datetime,
         "bono_pct":       bono_pct,
         "monto_bono_mxn": monto,
         "closed_count":   len(closed),
+        "closed_count_all": len(closed_all),  # cumulative (dashboard only, not bonus)
         "assigned_count": len(assigned),
         "style_total":    len(style_total),
         "style_closed":   len(style_closed),
@@ -291,8 +304,9 @@ def get_semana_detail(semana: str, db: Session = Depends(get_db)):
             "afectacion_pct":    kpi["afectacion_pct"],
             "cambios_pct":       kpi["cambios_pct"],
             "orden_pct":         kpi["orden_pct"],
-            "tickets_cerrados":  kpi["closed_count"],
-            "tickets_asignados": kpi["assigned_count"],
+            "tickets_cerrados":  kpi["closed_count_all"],   # cumulative (matches asignados basis)
+            "tickets_cerrados_semana": kpi["closed_count"], # week-scoped (still available if needed)
+            "tickets_asignados": kpi["assigned_count"],     # cumulative as of week end
             "monto_bono_mxn":    kpi["monto_bono_mxn"],
             "monto_final_mxn":   stored_montos.get(str(m.id)),
         })
