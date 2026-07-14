@@ -696,3 +696,194 @@ def reporte_cambios(
         "promedio_tiempo_min": promedio,
         "cambios": cambios,
     }
+
+# ==========================================
+# PERIODO — week / month / year rollup
+# GET /rh/bonos/periodo/{tipo}/{valor}
+#   tipo = "semana" | "mes" | "anio"
+#   valor:  semana -> YYYY-MM-DD (Monday)
+#           mes    -> YYYY-MM
+#           anio   -> YYYY
+# ==========================================
+# Ticket metrics (created / closed / avg time / delayed) are STRICTLY within the
+# calendar period [start, end]. Bonus figures are the SUM of confirmed weekly
+# payouts (BonoCierre rows with status == "cerrado") whose Monday falls inside
+# the period — the same basis as /rh/bonos/historial. Per-mechanic effective
+# amount per week = stored final (montos_individuales) when RH set one, else the
+# calculated amount recomputed with current config. Open (not-yet-closed) weeks
+# are NOT counted toward bonus, and the response reports how many were skipped.
+# ==========================================
+
+def _period_range(tipo: str, valor: str):
+    """
+    Return (start_dt, end_dt, first_day, last_day) for the period.
+    start/end are tz-aware datetimes bounding the calendar range;
+    first_day/last_day are the plain dates used for week-membership.
+    Raises ValueError on a malformed valor.
+    """
+    if tipo == "semana":
+        first_day = date.fromisoformat(valor)          # Monday
+        last_day = first_day + timedelta(days=6)
+    elif tipo == "mes":
+        year, month = valor.split("-")
+        year, month = int(year), int(month)
+        if not (1 <= month <= 12):
+            raise ValueError("mes fuera de rango")
+        first_day = date(year, month, 1)
+        nxt = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+        last_day = nxt - timedelta(days=1)
+    elif tipo == "anio":
+        year = int(valor)
+        first_day = date(year, 1, 1)
+        last_day = date(year, 12, 31)
+    else:
+        raise ValueError("tipo inválido")
+
+    start = datetime.combine(first_day, datetime.min.time()).replace(tzinfo=timezone.utc)
+    end = datetime.combine(last_day, datetime.max.time()).replace(tzinfo=timezone.utc)
+    return start, end, first_day, last_day
+
+
+def _as_utc(dt):
+    return dt.replace(tzinfo=timezone.utc) if dt is not None else None
+
+
+@router.get("/bonos/periodo/{tipo}/{valor}")
+def get_periodo_detail(tipo: str, valor: str, db: Session = Depends(get_db)):
+    tipo = tipo.lower()
+    if tipo not in ("semana", "mes", "anio"):
+        raise HTTPException(status_code=400, detail="tipo debe ser semana | mes | anio")
+    try:
+        start, end, first_day, last_day = _period_range(tipo, valor)
+    except (ValueError, IndexError):
+        raise HTTPException(status_code=400, detail="valor inválido para el tipo indicado")
+
+    t100, t0 = get_tiempo_thresholds(db)
+    bono_max = get_bono_max(db)
+
+    all_tickets  = db.query(Ticket).all()
+    mecanicos_db = db.query(User).filter(User.role == "mecanico").all()
+
+    # Group tickets by assignee once (avoids re-scanning per mechanic per week).
+    tickets_by_mech: dict[str, list] = {}
+    for t in all_tickets:
+        tickets_by_mech.setdefault(str(t.assigned_to), []).append(t)
+
+    # --- Bonus source: confirmed (cerrado) weeks whose Monday is in the period.
+    cerrado_rows = db.query(BonoCierre).filter(BonoCierre.status == "cerrado").all()
+    weeks_in_period = []
+    for r in cerrado_rows:
+        try:
+            wd = date.fromisoformat(r.semana)
+        except (ValueError, TypeError):
+            continue
+        if first_day <= wd <= last_day:
+            weeks_in_period.append(r)
+
+    # How many weeks in the period exist but are still open (not counted).
+    open_rows = db.query(BonoCierre).filter(BonoCierre.status != "cerrado").all()
+    weeks_open_in_period = 0
+    for r in open_rows:
+        try:
+            wd = date.fromisoformat(r.semana)
+        except (ValueError, TypeError):
+            continue
+        if first_day <= wd <= last_day:
+            weeks_open_in_period += 1
+
+    # Pre-index stored per-mechanic final amounts for each confirmed week.
+    stored_by_week = {r.semana: get_stored_montos(r) for r in weeks_in_period}
+
+    mecanicos = []
+    total_bono = 0
+    for m in mecanicos_db:
+        mid = str(m.id)
+        my_tickets = tickets_by_mech.get(mid, [])
+
+        # --- Ticket metrics: strictly inside [start, end] ---
+        created_in = [
+            t for t in my_tickets
+            if t.status != TicketStatus.cancelado
+            and t.created_at and start <= _as_utc(t.created_at) <= end
+        ]
+        closed_in = [
+            t for t in my_tickets
+            if t.status == TicketStatus.cerrado
+            and t.completed_at and start <= _as_utc(t.completed_at) <= end
+        ]
+        delayed_in = [t for t in closed_in if (t.resolution_minutes or 0) > t100]
+        mins = [t.resolution_minutes for t in closed_in if t.resolution_minutes is not None]
+        avg_close = round(sum(mins) / len(mins), 1) if mins else None
+
+        # --- Bonus: sum weekly effective across confirmed weeks in period ---
+        mech_effective = 0
+        mech_calculated = 0
+        mech_final = 0
+        mech_has_final = False
+        pct_samples = []
+        for r in weeks_in_period:
+            stored = stored_by_week.get(r.semana, {})
+            if mid in stored:
+                amount = stored[mid] or 0
+                mech_effective += amount
+                mech_final += amount
+                mech_has_final = True
+                # recompute pct for context (avg later)
+                wstart, wend = week_range(r.semana)
+                kpi = compute_kpis(my_tickets, wstart, wend, t100, t0, bono_max)
+                mech_calculated += kpi["monto_bono_mxn"]
+                pct_samples.append(kpi["bono_pct"])
+            else:
+                wstart, wend = week_range(r.semana)
+                kpi = compute_kpis(my_tickets, wstart, wend, t100, t0, bono_max)
+                mech_effective += kpi["monto_bono_mxn"]
+                mech_calculated += kpi["monto_bono_mxn"]
+                pct_samples.append(kpi["bono_pct"])
+
+        total_bono += mech_effective
+
+        mecanicos.append({
+            "id":                 mid,
+            "nombre":             m.nombre,
+            "email":              m.username,
+            "asignacion":         m.current_location.value if m.current_location else "piso",
+            "tickets_asignados":  len(created_in),           # created in period
+            "tickets_cerrados":   len(closed_in),            # closed in period
+            "avg_resolution_minutes": avg_close,             # avg within period
+            "delayed_tickets":    len(delayed_in),           # delayed within period
+            "monto_bono_mxn":     mech_effective,            # summed weekly effective
+            "monto_calculado_mxn": mech_calculated,          # summed weekly calculated
+            "monto_final_mxn":    mech_final if mech_has_final else None,
+            "bono_pct":           round(sum(pct_samples) / len(pct_samples), 1) if pct_samples else 0.0,
+        })
+
+    # --- Global period metrics (strictly within range) ---
+    g_created = [
+        t for t in all_tickets
+        if t.status != TicketStatus.cancelado
+        and t.created_at and start <= _as_utc(t.created_at) <= end
+    ]
+    g_closed = [
+        t for t in all_tickets
+        if t.status == TicketStatus.cerrado
+        and t.completed_at and start <= _as_utc(t.completed_at) <= end
+    ]
+    g_mins = [t.resolution_minutes for t in g_closed if t.resolution_minutes is not None]
+    g_avg = round(sum(g_mins) / len(g_mins), 1) if g_mins else None
+
+    return {
+        "success": True,
+        "tipo":    tipo,
+        "valor":   valor,
+        "desde":   first_day.isoformat(),
+        "hasta":   last_day.isoformat(),
+        "global": {
+            "tickets_creados":     len(g_created),
+            "tickets_cerrados":    len(g_closed),
+            "avg_closing_minutes": g_avg,
+            "total_bono_mxn":      total_bono,
+            "semanas_confirmadas": len(weeks_in_period),
+            "semanas_abiertas":    weeks_open_in_period,
+        },
+        "mecanicos": mecanicos,
+    }
