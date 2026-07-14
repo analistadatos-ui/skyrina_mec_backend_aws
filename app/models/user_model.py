@@ -29,6 +29,8 @@ class UserRole(str, enum.Enum):
 
     rh = "rh"
 
+    muestra = "muestra"
+
 
 # ==========================================
 # MECHANIC LOCATION
