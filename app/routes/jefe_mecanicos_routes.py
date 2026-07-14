@@ -117,13 +117,24 @@ router = APIRouter(
 # ==========================================
 DEFAULT_UNRANKED_MECHANIC_RANK = 500  # mecanicos with no experience_rank sort after ranked ones
 
+# Sample-room ("Muestras") line. Tickets for this line must be handled by
+# mechanics stationed in muestras, never by floor (piso) mechanics.
+MUESTRAS_LINEA_ID = "721bb213-17ab-4966-a2d5-ece6db145ea8"
+
+def location_for_linea(linea_id) -> MechanicLocation:
+    """Muestra-line tickets route to sample-room mechanics; everything else to the floor."""
+    if linea_id is not None and str(linea_id) == MUESTRAS_LINEA_ID:
+        return MechanicLocation.muestras
+    return MechanicLocation.piso
+
 
 def get_lowest_load_mechanic(
-    db: Session
+    db: Session,
+    location: MechanicLocation = MechanicLocation.piso,
 ):
     mechanics = db.query(User).filter(
         User.role == "mecanico",
-        User.current_location == MechanicLocation.piso,
+        User.current_location == location,
         User.status == True,
     ).all()
 
@@ -415,7 +426,7 @@ def assign_mechanic(
                 detail="Ticket not found",
             )
 
-        mechanic = get_lowest_load_mechanic(db)
+        mechanic = get_lowest_load_mechanic(db, location_for_linea(ticket.linea_id))
 
         if not mechanic:
             raise HTTPException(
@@ -515,9 +526,11 @@ def reassign_ticket(
                 detail="Ticket not found",
             )
 
+        location = location_for_linea(ticket.linea_id)
         new_mechanic = db.query(User).filter(
             User.id == nuevo_mecanico_id,
-            User.role == "mecanico"
+            User.role == "mecanico",
+            User.current_location == location
         ).first()
 
         if not new_mechanic:

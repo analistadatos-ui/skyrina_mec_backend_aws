@@ -17,7 +17,7 @@ from sqlalchemy.sql import func
 
 from app.database import get_db
 
-# Models
+# Models 
 from app.models.linea_model import Linea
 from app.models.cambio_estilo_model import CambioEstilo
 from app.models.ticket_model import Ticket, TicketType, TicketStatus
@@ -26,10 +26,10 @@ from app.models.ticket_asignacion_model import TicketAsignacion, AsignacionStatu
 from app.models.ticket_historial_model import TicketHistorial
 from app.models.ticket_comentario_model import TicketComentario
 from app.models.ticket_validation_model import TicketValidacion
-from app.models.user_model import User
+from app.models.user_model import User, MechanicLocation
 from app.models.tipo_falla_model import TipoFalla
 
-from app.routes.jefe_mecanicos_routes import get_lowest_load_mechanic
+from app.routes.jefe_mecanicos_routes import get_lowest_load_mechanic, location_for_linea
 
 router = APIRouter(
     prefix="/tickets",
@@ -112,7 +112,10 @@ async def create_falla_equipo_ticket(
             )
 
         # Auto assign mechanic
-        mechanic = get_lowest_load_mechanic(db)
+        # Route to the right pool: muestra-line tickets go to sample-room
+        # mechanics, everything else to the floor.
+        location = location_for_linea(linea_uuid)
+        mechanic = get_lowest_load_mechanic(db, location)
 
         # Create ticket
         ticket = Ticket(
@@ -125,7 +128,7 @@ async def create_falla_equipo_ticket(
             assigned_to=mechanic.id if mechanic else None,
             status=TicketStatus.asignado if mechanic else TicketStatus.pendiente,
             prioridad_general=prioridad,
-            ubicacion="piso",
+            ubicacion=location.value,
         )
         db.add(ticket)
         db.flush()
@@ -214,7 +217,8 @@ async def create_cambio_estilo_ticket(
         created_by_uuid = uuid.UUID(created_by)
 
         ticket_number = generate_ticket_number()
-        mechanic = get_lowest_load_mechanic(db)
+        location = location_for_linea(linea_uuid)
+        mechanic = get_lowest_load_mechanic(db, location)
 
         ticket = Ticket(
             ticket_number=ticket_number,
@@ -226,7 +230,7 @@ async def create_cambio_estilo_ticket(
             assigned_to=mechanic.id if mechanic else None,
             status=TicketStatus.asignado if mechanic else TicketStatus.pendiente,
             prioridad_general=prioridad,
-            ubicacion="piso",
+            ubicacion=location.value,
         )
         db.add(ticket)
         db.flush()
