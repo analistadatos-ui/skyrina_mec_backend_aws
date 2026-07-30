@@ -10,11 +10,17 @@ from fastapi import (
 
 from sqlalchemy.orm import Session
 
+from sqlalchemy import or_
+
 from app.database import get_db
 
 from app.models.ticket_model import (
     Ticket,
     TicketStatus,
+)
+
+from app.models.ticket_asignacion_model import (
+    TicketAsignacion,
 )
 
 from app.models.user_model import (
@@ -80,8 +86,22 @@ def get_my_tickets(
             detail="Mechanic not found",
         )
 
+    # Tickets where this mechanic is a HELPER (ayudante) on a
+    # cambio_estilo ticket — they should see them too, in assist mode.
+    helper_ticket_ids = [
+        row[0]
+        for row in db.query(TicketAsignacion.ticket_id).filter(
+            TicketAsignacion.mecanico_id == mechanic.id,
+            TicketAsignacion.es_ayudante == True,  # noqa: E712
+        ).all()
+    ]
+
+    ownership_filter = [Ticket.assigned_to == mechanic.id]
+    if helper_ticket_ids:
+        ownership_filter.append(Ticket.id.in_(helper_ticket_ids))
+
     tickets = db.query(Ticket).filter(
-        Ticket.assigned_to == mechanic.id
+        or_(*ownership_filter)
     ).order_by(
         Ticket.created_at.desc()
     ).all()
@@ -148,6 +168,9 @@ def get_my_tickets(
             "resolution_minutes": getattr(ticket, 'resolution_minutes', None),
             "delayed": getattr(ticket, 'delayed', False),
             "completed_at": str(ticket.completed_at) if ticket.completed_at else None,
+            # True when this mechanic is a HELPER on the ticket rather than
+            # the main assignee — the UI shows it in read-only "assist" mode.
+            "is_helper": ticket.assigned_to != mechanic.id,
         })
 
     return {

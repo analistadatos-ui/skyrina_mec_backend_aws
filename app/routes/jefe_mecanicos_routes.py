@@ -202,6 +202,29 @@ def get_lowest_load_mechanic(
 
 
 # ==========================================
+# HELPERS ("AYUDANTES") FOR CAMBIO DE ESTILO
+# A cambio_estilo ticket has ONE main mechanic (ticket.assigned_to)
+# plus up to MAX_AYUDANTES helper mechanics, stored as
+# TicketAsignacion rows with es_ayudante=True.
+# ==========================================
+MAX_AYUDANTES = 3
+
+
+def _get_ayudantes(db: Session, ticket_id):
+    """Return [{id, nombre}] for the helper mechanics of a ticket."""
+    rows = (
+        db.query(TicketAsignacion, User)
+        .join(User, User.id == TicketAsignacion.mecanico_id)
+        .filter(
+            TicketAsignacion.ticket_id == ticket_id,
+            TicketAsignacion.es_ayudante == True,  # noqa: E712
+        )
+        .all()
+    )
+    return [{"id": str(u.id), "nombre": u.nombre} for (_, u) in rows]
+
+
+# ==========================================
 # GET PENDING TICKETS (ACTIVE TICKETS)
 # ==========================================
 @router.get("/tickets/pendientes")
@@ -263,6 +286,12 @@ def get_pending_tickets(
                 "linea_numero": linea_numero,
                 "maquina_nombre": falla.maquina_nombre if falla else None,
                 "maquina_codigo": falla.maquina_codigo if falla else None,
+                # Helper mechanics (only cambio_estilo tickets have them)
+                "ayudantes": (
+                    _get_ayudantes(db, ticket.id)
+                    if ticket.tipo == TicketType.cambio_estilo
+                    else []
+                ),
             })
 
         return {
@@ -602,6 +631,191 @@ def reassign_ticket(
         raise HTTPException(
             status_code=500,
             detail=f"Error reassigning ticket: {str(e)}"
+        )
+
+
+# ==========================================
+# SET / UPDATE HELPERS ("AYUDANTES") FOR A CAMBIO DE ESTILO TICKET
+# The jefe de mecánicos can assign up to 3 helper mechanics to
+# assist the main mechanic on a cambio_estilo ticket.
+#
+# This endpoint is idempotent: it replaces the full helper set for
+# the ticket with `ayudante_ids`. Send an empty list to clear them.
+# ==========================================
+from pydantic import BaseModel as _BaseModel
+from typing import List as _List
+
+
+class SetAyudantesSchema(_BaseModel):
+    ticket_id: str
+    jefe_mecanicos_id: str
+    ayudante_ids: _List[str] = []
+
+
+@router.post("/tickets/ayudantes")
+def set_ticket_ayudantes(
+    payload: SetAyudantesSchema,
+    db: Session = Depends(get_db),
+):
+    try:
+        try:
+            ticket_uuid = uuid.UUID(payload.ticket_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="Invalid ticket ID")
+
+        ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+        # Helpers only make sense for style-change tickets
+        if ticket.tipo != TicketType.cambio_estilo:
+            raise HTTPException(
+                status_code=400,
+                detail="Solo los tickets de cambio de estilo pueden tener ayudantes",
+            )
+
+        # De-duplicate incoming ids, drop blanks
+        raw_ids = [i for i in (payload.ayudante_ids or []) if i]
+        seen = set()
+        clean_ids = []
+        for i in raw_ids:
+            try:
+                uid = uuid.UUID(str(i))
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=422, detail=f"Invalid mechanic ID: {i}")
+            # A helper cannot be the main assigned mechanic
+            if ticket.assigned_to and uid == ticket.assigned_to:
+                continue
+            if uid in seen:
+                continue
+            seen.add(uid)
+            clean_ids.append(uid)
+
+        if len(clean_ids) > MAX_AYUDANTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Máximo {MAX_AYUDANTES} ayudantes por ticket",
+            )
+
+        # Validate that every id is an active mechanic
+        valid_mechanics = []
+        if clean_ids:
+            valid_mechanics = (
+                db.query(User)
+                .filter(
+                    User.id.in_(clean_ids),
+                    User.role == "mecanico",
+                    User.status == True,  # noqa: E712
+                )
+                .all()
+            )
+            found_ids = {m.id for m in valid_mechanics}
+            missing = [str(i) for i in clean_ids if i not in found_ids]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Mecánico(s) no válido(s) o inactivo(s): {', '.join(missing)}",
+                )
+
+        # Replace the existing helper set (main-assignment rows are left alone)
+        db.query(TicketAsignacion).filter(
+            TicketAsignacion.ticket_id == ticket.id,
+            TicketAsignacion.es_ayudante == True,  # noqa: E712
+        ).delete(synchronize_session=False)
+
+        for mechanic in valid_mechanics:
+            try:
+                asignacion = TicketAsignacion(
+                    ticket_id=ticket.id,
+                    mecanico_id=mechanic.id,
+                    asignado_por=payload.jefe_mecanicos_id,
+                    status=AsignacionStatus.asignado,
+                    es_ayudante=True,
+                    notas="Ayudante de cambio de estilo",
+                )
+            except AttributeError:
+                asignacion = TicketAsignacion(
+                    ticket_id=ticket.id,
+                    mecanico_id=mechanic.id,
+                    asignado_por=payload.jefe_mecanicos_id,
+                    status="asignado",
+                    es_ayudante=True,
+                    notas="Ayudante de cambio de estilo",
+                )
+            db.add(asignacion)
+
+        nombres = ", ".join(m.nombre for m in valid_mechanics) or "ninguno"
+        historial = TicketHistorial(
+            ticket_id=ticket.id,
+            usuario_id=payload.jefe_mecanicos_id,
+            accion="ayudantes_actualizados",
+            descripcion=f"Ayudantes asignados: {nombres}",
+        )
+        db.add(historial)
+
+        db.commit()
+
+        # ==========================================
+        # 🔔 NOTIFY EACH HELPER (capped at 5s total)
+        # ==========================================
+        def _notify_helpers():
+            for mechanic in valid_mechanics:
+                send_push(
+                    db,
+                    user_id=mechanic.id,
+                    title="🤝 Asignado como ayudante",
+                    body=f"Ticket #{ticket.ticket_number}: {ticket.titulo}",
+                    url="/mecanico",
+                )
+
+        if valid_mechanics:
+            run_push_with_timeout(_notify_helpers)
+
+        return {
+            "success": True,
+            "message": "Ayudantes actualizados",
+            "ayudantes": [
+                {"id": str(m.id), "nombre": m.nombre} for m in valid_mechanics
+            ],
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        print(f"Error in set_ticket_ayudantes: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating helpers: {str(e)}",
+        )
+
+
+# ==========================================
+# GET HELPERS ("AYUDANTES") FOR A TICKET
+# ==========================================
+@router.get("/tickets/{ticket_id}/ayudantes")
+def get_ticket_ayudantes(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        try:
+            ticket_uuid = uuid.UUID(ticket_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="Invalid ticket ID")
+
+        return {
+            "success": True,
+            "ayudantes": _get_ayudantes(db, ticket_uuid),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_ticket_ayudantes: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching helpers: {str(e)}",
         )
 
 

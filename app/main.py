@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Import all models (so SQLAlchemy is aware of them)
 from app.models.user_model import User
+
 from app.models.linea_model import Linea
 from app.models.ticket_model import Ticket
 from app.models.ticket_falla_model import TicketFallaEquipo
@@ -31,6 +32,7 @@ from app.models.ticket_historial_model import TicketHistorial
 from app.models.ticket_comentario_model import TicketComentario
 from app.models.tipo_falla_model import TipoFalla
 from app.models.push_subscription_model import PushSubscription
+
 
 # Import routes
 from app.routes import auth_routes, supervisor_routes, ticket_routes

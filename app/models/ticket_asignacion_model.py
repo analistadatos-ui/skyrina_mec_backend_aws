@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     Enum,
     Text,
+    Boolean,
 )
 
 from sqlalchemy.dialects.postgresql import UUID
@@ -78,6 +79,16 @@ class TicketAsignacion(Base):
     notas = Column(
         Text,
         nullable=True,
+    )
+
+    # True  -> this row is a HELPER ("ayudante") assignment for a
+    #          cambio_estilo ticket (up to 3 per ticket).
+    # False -> this row is a normal/main assignment (the historical
+    #          audit rows created by auto-assign / reassign).
+    es_ayudante = Column(
+        Boolean,
+        nullable=False,
+        default=False,
     )
 
     created_at = Column(

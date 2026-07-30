@@ -601,6 +601,23 @@ def get_single_ticket(
                     "observaciones": cambio.observaciones,
                 })
 
+        # Helper mechanics ("ayudantes") — only relevant for cambio_estilo,
+        # but harmless to compute generally. The detail page uses this to
+        # (a) show the main mechanic who is assisting, and (b) detect when
+        # the current viewer is a helper and switch to read-only mode.
+        ayudante_rows = (
+            db.query(TicketAsignacion, User)
+            .join(User, User.id == TicketAsignacion.mecanico_id)
+            .filter(
+                TicketAsignacion.ticket_id == ticket.id,
+                TicketAsignacion.es_ayudante == True,  # noqa: E712
+            )
+            .all()
+        )
+        response["ayudantes"] = [
+            {"id": str(u.id), "nombre": u.nombre} for (_, u) in ayudante_rows
+        ]
+
         return {"success": True, "ticket": response}
 
     except Exception as e:
