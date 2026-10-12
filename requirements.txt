@@ -1,11 +1,12 @@
 fastapi
-   mangum
-   sqlalchemy
-   psycopg2-binary
-   passlib[bcrypt]
-   bcrypt
-   pydantic
-   python-dotenv
-   boto3
-   python-multipart
-   pywebpush
+mangum
+sqlalchemy
+psycopg[binary]
+psycopg2-binary
+passlib[bcrypt]
+bcrypt
+pydantic
+python-dotenv
+boto3
+python-multipart
+pywebpush
