@@ -887,3 +887,192 @@ def get_periodo_detail(tipo: str, valor: str, db: Session = Depends(get_db)):
         },
         "mecanicos": mecanicos,
     }
+
+# ==========================================================
+# RH DASHBOARD
+# Paste this block at the END of app/routes/rh_routes.py
+#
+# GET /rh/dashboard?dias=30     (dias=0 -> all tickets)
+#
+# Returns:
+#   stats          -> totals for the period
+#   tickets        -> every ticket in the period (active + closed)
+#   reasignaciones -> who reassigned which ticket, from whom to whom
+#
+# Evidence photos are NOT loaded here (they need presigned URLs);
+# the frontend loads them on demand from the existing endpoint
+#   GET /tickets/{ticket_id}/validacion-fotos
+# ==========================================================
+import re
+
+from app.models.falla_equipo_model import FallaEquipo
+from app.models.ticket_historial_model import TicketHistorial
+from app.models.ticket_validation_model import TicketValidacion
+
+_ACTIVE_STATUSES = {"pendiente", "asignado", "en_proceso", "pausado"}
+_DONE_STATUSES = {"completado", "validado"}  # finished by mechanic, not closed yet
+_REASSIGN_RE = re.compile(r"^Ticket reassigned from (.+?) to (.+)$")
+
+
+def _enum_value(value):
+    if value is None:
+        return None
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _iso(dt):
+    """ISO string with timezone. Naive DB timestamps are stored in UTC."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _minutes_between(start, end):
+    if not start or not end:
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    return max(0, int((end - start).total_seconds() // 60))
+
+
+def _historial_fecha(h):
+    # Column name differs between versions of the model; try the usual ones.
+    for attr in ("created_at", "fecha", "timestamp"):
+        value = getattr(h, attr, None)
+        if value is not None:
+            return value
+    return None
+
+
+@router.get("/dashboard")
+def rh_dashboard(dias: int = 30, db: Session = Depends(get_db)):
+    try:
+        query = db.query(Ticket)
+        if dias and dias > 0:
+            since = datetime.now(timezone.utc) - timedelta(days=dias)
+            query = query.filter(Ticket.created_at >= since)
+
+        tickets = query.order_by(Ticket.created_at.desc()).all()
+        ticket_ids = [t.id for t in tickets]
+
+        # ---------- lookup maps (one query each, no N+1) ----------
+        users = {str(u.id): u.nombre for u in db.query(User.id, User.nombre).all()}
+
+        lineas = {}
+        for linea in db.query(Linea).all():
+            lineas[str(linea.id)] = {
+                "numero": linea.numero,
+                "nombre": linea.nombre,
+            }
+
+        fallas = {}
+        evidencia = {}
+        reassign_rows = []
+
+        if ticket_ids:
+            for f in db.query(FallaEquipo).filter(FallaEquipo.ticket_id.in_(ticket_ids)).all():
+                fallas[f.ticket_id] = f
+
+            for v in db.query(TicketValidacion).filter(TicketValidacion.ticket_id.in_(ticket_ids)).all():
+                fotos = [k for k in (v.fotos or []) if k]
+                evidencia[v.ticket_id] = evidencia.get(v.ticket_id, 0) + len(fotos)
+
+            reassign_rows = db.query(TicketHistorial).filter(
+                TicketHistorial.ticket_id.in_(ticket_ids),
+                TicketHistorial.accion == "ticket_reasignado",
+            ).all()
+
+        # ---------- reassignments ----------
+        ticket_by_id = {t.id: t for t in tickets}
+        reasignaciones = []
+        reassign_count = {}
+
+        for h in reassign_rows:
+            de_raw, a_nombre = None, None
+            match = _REASSIGN_RE.match(h.descripcion or "")
+            if match:
+                de_raw, a_nombre = match.group(1).strip(), match.group(2).strip()
+
+            if not de_raw or de_raw == "None":
+                de_nombre = "Sin asignar"
+            else:
+                de_nombre = users.get(de_raw, de_raw)
+
+            ticket = ticket_by_id.get(h.ticket_id)
+            reassign_count[h.ticket_id] = reassign_count.get(h.ticket_id, 0) + 1
+
+            reasignaciones.append({
+                "ticket_id": str(h.ticket_id),
+                "ticket_number": ticket.ticket_number if ticket else None,
+                "titulo": ticket.titulo if ticket else None,
+                "de": de_nombre,
+                "a": a_nombre or "—",
+                "reasignado_por": users.get(str(h.usuario_id), "—"),
+                "fecha": _iso(_historial_fecha(h)),
+            })
+
+        reasignaciones.sort(key=lambda r: r["fecha"] or "", reverse=True)
+
+        # ---------- tickets ----------
+        result = []
+        for t in tickets:
+            status = _enum_value(t.status)
+            falla = fallas.get(t.id)
+            linea = lineas.get(str(t.linea_id)) if t.linea_id else None
+
+            result.append({
+                "id": str(t.id),
+                "ticket_number": t.ticket_number,
+                "titulo": t.titulo,
+                "tipo": _enum_value(t.tipo),
+                "status": status,
+                "prioridad": t.prioridad_general,
+                "ubicacion": _enum_value(t.ubicacion),
+                "linea_numero": linea["numero"] if linea else None,
+                "linea_nombre": linea["nombre"] if linea else None,
+                "mecanico": users.get(str(t.assigned_to)) if t.assigned_to else None,
+                "cerrado_por": users.get(str(t.closed_by)) if getattr(t, "closed_by", None) else None,
+                "maquina": falla.maquina_nombre if falla else None,
+                "maquina_codigo": falla.maquina_codigo if falla else None,
+                "tiene_foto_falla": bool(falla and falla.image_url),
+                "created_at": _iso(t.created_at),
+                "started_at": _iso(t.started_at),
+                "completed_at": _iso(t.completed_at),
+                "closed_at": _iso(t.closed_at),
+                "resolution_minutes": t.resolution_minutes,
+                "total_minutes": _minutes_between(t.created_at, t.closed_at),
+                "delayed": bool(getattr(t, "delayed", False)),
+                "evidencia_fotos": evidencia.get(t.id, 0),
+                "reasignaciones": reassign_count.get(t.id, 0),
+            })
+
+        # ---------- stats ----------
+        cerrados = [r for r in result if r["status"] == "cerrado"]
+        tiempos = [r["resolution_minutes"] for r in cerrados if r["resolution_minutes"] is not None]
+
+        stats = {
+            "total_creados": len(result),
+            "activos": sum(1 for r in result if r["status"] in _ACTIVE_STATUSES),
+            "por_cerrar": sum(1 for r in result if r["status"] in _DONE_STATUSES),
+            "cerrados": len(cerrados),
+            "cerrados_con_evidencia": sum(1 for r in cerrados if r["evidencia_fotos"] > 0),
+            "reasignaciones": len(reasignaciones),
+            "promedio_resolucion_min": round(sum(tiempos) / len(tiempos)) if tiempos else None,
+            "retrasados": sum(1 for r in cerrados if r["delayed"]),
+        }
+
+        return {
+            "success": True,
+            "dias": dias,
+            "stats": stats,
+            "tickets": result,
+            "reasignaciones": reasignaciones,
+        }
+
+    except Exception as e:
+        print(f"Error in rh_dashboard: {e}")
+        raise HTTPException(status_code=500, detail=f"Error loading dashboard: {e}")
