@@ -119,7 +119,7 @@ DEFAULT_UNRANKED_MECHANIC_RANK = 500  # mecanicos with no experience_rank sort a
 
 # Sample-room ("Muestras") line. Tickets for this line must be handled by
 # mechanics stationed in muestras, never by floor (piso) mechanics.
-MUESTRAS_LINEA_ID = "721bb213-17ab-4966-a2d5-ece6db145ea8"
+MUESTRAS_LINEA_ID = "e93dc736-3b77-4c06-a73a-1e31a46f5c5f"
 
 def location_for_linea(linea_id) -> MechanicLocation:
     """Muestra-line tickets route to sample-room mechanics; everything else to the floor."""
